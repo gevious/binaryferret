@@ -34,12 +34,6 @@ fn scaffold(root: &Path) -> Result<()> {
         &root.join("README.md"),
         "# My BinaryFerret Vault\n\nEdit any doc in neovim; it syncs to your other machines automatically.\nCross-reference docs anywhere with `[[wiki-links]]`.\n",
     )?;
-    write_if_absent(
-        &root.join("acquisitions/acme/notes.md"),
-        "# ACME — notes\n\nAn example topic. Put related media in the sibling `assets/` folder.\n",
-    )?;
-    fs::create_dir_all(root.join("acquisitions/acme/assets"))?;
-    write_if_absent(&root.join("acquisitions/acme/assets/.gitkeep"), "")?;
     Ok(())
 }
 
