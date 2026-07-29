@@ -1,0 +1,178 @@
+//! Thin wrapper over Syncthing's localhost REST API. Every agent interaction
+//! with Syncthing goes through here (FR-8 — no config-file edits while it runs).
+//! The API key authenticates via the X-API-Key header.
+//!
+//! Config objects (folders/devices/options) are passed as `serde_json::Value`
+//! so Syncthing's own fields survive a get-modify-put round trip untouched.
+
+use std::collections::BTreeMap;
+use std::time::Duration;
+
+use anyhow::{anyhow, bail, Result};
+use serde::Deserialize;
+use serde_json::Value;
+
+pub struct Client {
+    base: String,
+    api_key: String,
+    agent: ureq::Agent,
+}
+
+#[derive(Deserialize)]
+struct SystemStatus {
+    #[serde(rename = "myID")]
+    my_id: String,
+}
+
+#[derive(Deserialize)]
+struct SystemVersion {
+    version: String,
+}
+
+#[derive(Deserialize)]
+pub struct FolderStatus {
+    pub state: String,
+    #[serde(rename = "needBytes")]
+    pub need_bytes: i64,
+}
+
+#[derive(Deserialize)]
+pub struct Connection {
+    pub connected: bool,
+    #[serde(default)]
+    pub address: String,
+}
+
+#[derive(Deserialize)]
+struct Connections {
+    connections: BTreeMap<String, Connection>,
+}
+
+#[derive(Deserialize)]
+pub struct PendingDevice {
+    #[serde(default)]
+    pub name: String,
+}
+
+impl Client {
+    pub fn new(gui_address: &str, api_key: &str) -> Client {
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(30))
+            .build();
+        Client { base: format!("http://{gui_address}"), api_key: api_key.to_string(), agent }
+    }
+
+    fn req(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
+        let url = format!("{}{}", self.base, path);
+        let r = self.agent.request(method, &url).set("X-API-Key", &self.api_key);
+        let resp = match body {
+            Some(b) => r.send_json(b.clone()),
+            None => r.call(),
+        };
+        match resp {
+            Ok(resp) => {
+                let s = resp.into_string().unwrap_or_default();
+                if s.trim().is_empty() {
+                    Ok(Value::Null)
+                } else {
+                    serde_json::from_str(&s).map_err(|e| anyhow!("bad JSON from {method} {path}: {e}"))
+                }
+            }
+            Err(ureq::Error::Status(code, resp)) => {
+                let body = resp.into_string().unwrap_or_default();
+                bail!("Syncthing API {method} {path} failed: {code} {}", body.trim())
+            }
+            Err(e) => bail!("cannot reach Syncthing at {} — is the agent started? ({e})", self.base),
+        }
+    }
+
+    fn get_typed<T: for<'de> Deserialize<'de>>(&self, path: &str) -> Result<T> {
+        let v = self.req("GET", path, None)?;
+        Ok(serde_json::from_value(v)?)
+    }
+
+    pub fn ping(&self) -> bool {
+        self.req("GET", "/rest/system/ping", None).is_ok()
+    }
+
+    pub fn my_device_id(&self) -> Result<String> {
+        let s: SystemStatus = self.get_typed("/rest/system/status")?;
+        Ok(s.my_id)
+    }
+
+    pub fn version(&self) -> Result<String> {
+        let v: SystemVersion = self.get_typed("/rest/system/version")?;
+        Ok(v.version)
+    }
+
+    // --- options (round-tripped as Value to preserve unknown fields) ---
+
+    pub fn get_options(&self) -> Result<Value> {
+        self.req("GET", "/rest/config/options", None)
+    }
+
+    pub fn put_options(&self, options: &Value) -> Result<()> {
+        self.req("PUT", "/rest/config/options", Some(options)).map(|_| ())
+    }
+
+    // --- folders ---
+
+    pub fn get_folders(&self) -> Result<Vec<Value>> {
+        match self.req("GET", "/rest/config/folders", None)? {
+            Value::Array(a) => Ok(a),
+            _ => Ok(vec![]),
+        }
+    }
+
+    pub fn get_folder(&self, id: &str) -> Result<Option<Value>> {
+        Ok(self.get_folders()?.into_iter().find(|f| f.get("id").and_then(Value::as_str) == Some(id)))
+    }
+
+    pub fn put_folder(&self, folder: &Value) -> Result<()> {
+        let id = folder.get("id").and_then(Value::as_str).ok_or_else(|| anyhow!("folder missing id"))?;
+        self.req("PUT", &format!("/rest/config/folders/{id}"), Some(folder)).map(|_| ())
+    }
+
+    pub fn folder_status(&self, id: &str) -> Result<FolderStatus> {
+        self.get_typed(&format!("/rest/db/status?folder={}", urlencode(id)))
+    }
+
+    // --- devices ---
+
+    pub fn get_devices(&self) -> Result<Vec<Value>> {
+        match self.req("GET", "/rest/config/devices", None)? {
+            Value::Array(a) => Ok(a),
+            _ => Ok(vec![]),
+        }
+    }
+
+    pub fn put_device(&self, device: &Value) -> Result<()> {
+        let id = device.get("deviceID").and_then(Value::as_str).ok_or_else(|| anyhow!("device missing deviceID"))?;
+        self.req("PUT", &format!("/rest/config/devices/{id}"), Some(device)).map(|_| ())
+    }
+
+    // --- cluster / connections ---
+
+    pub fn pending_devices(&self) -> Result<BTreeMap<String, PendingDevice>> {
+        let v = self.req("GET", "/rest/cluster/pending/devices", None)?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
+    pub fn connections(&self) -> Result<BTreeMap<String, Connection>> {
+        let c: Connections = self.get_typed("/rest/system/connections")?;
+        Ok(c.connections)
+    }
+}
+
+/// Minimal percent-encoding for a folder id in a query string.
+fn urlencode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            _ => out.push_str(&format!("%{:02X}", b)),
+        }
+    }
+    out
+}

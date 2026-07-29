@@ -1,0 +1,31 @@
+[package]
+name = "binaryferret"
+version = "0.1.0"
+edition = "2021"
+license = "AGPL-3.0-only"
+description = "P2P document vault desktop agent — orchestrates Syncthing for peer-to-peer sync across your machines."
+
+[[bin]]
+name = "binaryferret"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+# ureq without TLS: we only talk to Syncthing's REST over localhost HTTP.
+# The one HTTPS fetch (the Syncthing tarball) goes through `curl`, keeping the
+# static musl build free of ring/OpenSSL.
+ureq = { version = "2", default-features = false, features = ["json"] }
+flate2 = "1"
+tar = "0.4"
+libc = "0.2"
+anyhow = "1"
+
+[profile.release]
+strip = true
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

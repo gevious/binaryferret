@@ -1,0 +1,10 @@
+pub mod doctor;
+pub mod init;
+pub mod logs;
+pub mod pair;
+pub mod publish;
+pub mod service;
+pub mod start;
+pub mod status;
+pub mod stop;
+pub mod version;
