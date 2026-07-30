@@ -24,10 +24,12 @@ echo "== start both =="; run_a start; run_b start
 echo "== init vaults =="; run_a init "$ROOT/a/vault"; run_b init "$ROOT/b/vault"
 
 echo "== pair =="
-ID_A=$(run_a pair --show --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["deviceId"])')
+ID_A=$(run_a status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["deviceId"])')
+ID_B=$(run_b status --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["deviceId"])')
 run_b pair --with "$ID_A" --address tcp://127.0.0.1:22010
 sleep 2
-run_a pair --accept --address tcp://127.0.0.1:22011
+# Accept B and share the vault back (accepting alone admits the machine only).
+run_a pair "$ID_B" --accept --folder byteferret-vault --address tcp://127.0.0.1:22011
 
 echo "== sync A->B =="
 echo "# hello $(date)" > "$ROOT/a/vault/hello.md"

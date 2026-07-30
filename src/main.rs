@@ -44,9 +44,6 @@ enum Cmd {
     },
     /// Pair with another machine (Path A, peer-to-peer)
     Pair {
-        /// Print this device's ID (to give to another machine)
-        #[arg(long)]
-        show: bool,
         /// Pair with a machine by its device ID and share a folder with it
         #[arg(long, value_name = "DEVICE-ID")]
         with: Option<String>,
@@ -75,7 +72,7 @@ enum Cmd {
         #[arg(value_name = "DEVICE-ID")]
         id: Option<String>,
     },
-    /// Show agent, peers, sync state, conflicts
+    /// Show agent health, this device's id, peers, folders, sync state
     Status,
     /// Print agent and Syncthing versions
     Version,
@@ -141,7 +138,6 @@ fn main() {
         Cmd::Stop => commands::stop::stop(),
         Cmd::Init { path, existing } => commands::init::init(path, *existing),
         Cmd::Pair {
-            show,
             with,
             accept,
             reject,
@@ -152,7 +148,6 @@ fn main() {
             name,
             id,
         } => commands::pair::pair(commands::pair::PairArgs {
-            show: *show,
             with: with.as_deref(),
             accept: *accept,
             reject: *reject,

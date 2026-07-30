@@ -54,17 +54,17 @@ byteferret init ~/vault            # create a vault (scaffolds a starter structu
 byteferret service install --now   # auto-start the agent on login (optional)
 
 # On machine A:
-byteferret pair --show             # prints this machine's device ID
+byteferret status                  # prints this machine's device ID
 
 # On machine B:
 byteferret pair --with <A's-device-id>
 
 # Back on machine A:
-byteferret pair --show             # shows B's request, with its device ID
+byteferret status                  # shows B's request, with its device ID
 byteferret pair <B's-device-id> --accept                        # approve the machine
 byteferret pair <B's-device-id> --accept --folder <folder-id>   # share a folder with it
 
-byteferret status                  # peers, sync state, conflicts
+byteferret status                  # health, device id, peers, folders, sync state
 ```
 
 Edit anything in `~/vault` and it syncs to your paired machines automatically.
@@ -76,7 +76,7 @@ on its own admits the machine and shares nothing; each folder is then granted
 individually, so one peer can be given some folders and not others:
 
 ```sh
-byteferret pair --show                              # lists requests and offered folders
+byteferret status                                   # lists requests and offered folders
 byteferret pair <id> --accept --folder notes --folder recipes   # grant two folders
 byteferret pair <id> --reject --folder recipes      # withdraw one, keep the rest
 byteferret pair <id> --accept --all-folders         # take up everything it offers
@@ -100,10 +100,9 @@ A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 |---|---|
 | `byteferret start` / `stop` | Start/stop the managed Syncthing (idempotent) |
 | `byteferret init <path> [--existing]` | Create or attach a vault |
-| `byteferret pair --show` | This machine's device ID, peers, requests, offered folders |
 | `byteferret pair --with <id> [--folder <f>]` | Pair with a machine and share a folder |
 | `byteferret pair <id> --accept \| --reject [--folder <f> \| --all-folders]` | Approve/decline a machine, or one of its folders |
-| `byteferret status` | Agent health, peers, sync state, conflicts |
+| `byteferret status` | Agent health, hostname + device ID, peers & folders, requests, conflicts |
 | `byteferret doctor [--fix]` | Diagnose (and optionally repair) the setup |
 | `byteferret logs [-n N] [-f]` | Show/follow the agent log |
 | `byteferret publish <file> [--pdf] [--email]` | Render a doc to PDF locally |

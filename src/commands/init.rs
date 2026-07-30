@@ -74,7 +74,7 @@ pub fn init(target: &str, existing: bool) -> Result<()> {
     say(&format!("  folder id: {}", config.folder_id));
     say(if existing { "  attached existing folder (no files changed)" } else { "  scaffolded starter structure" });
     say("");
-    say("Next: pair another machine with `byteferret pair --show` here, then");
+    say("Next: get this machine's device id with `byteferret status`, then run");
     say("`byteferret pair --with <id>` on the other machine.");
     emit(&json!({ "ok": true, "vaultPath": path_str, "folderId": config.folder_id, "scaffolded": !existing }));
     Ok(())

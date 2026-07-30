@@ -132,7 +132,7 @@ main() {
     log "Next steps:"
     log "  byteferret init ~/vault          # create a vault"
     log "  byteferret service install --now # auto-start on login (optional)"
-    log "  byteferret pair --show           # begin pairing another machine"
+    log "  byteferret status                # health + this machine's device id (for pairing)"
   fi
 }
 

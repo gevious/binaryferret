@@ -252,7 +252,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
     if peers.is_empty() {
         checks.push(
             Check::new(Level::Warn, "peers", "none paired")
-                .with_hint("pair a machine with `byteferret pair --show` / `--with`"),
+                .with_hint("get this device's id with `byteferret status`, then `byteferret pair --with <id>` on the other machine"),
         );
     } else {
         let connected = peers.iter().filter(|p| p.connected).count();
@@ -266,9 +266,9 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
         // The check that catches the silent stall: a peer is connected, so
         // `peers` looks fine, but it never shared the vault back — so nothing
         // ever syncs. Uses the same `share_state()` classification as
-        // `pair --show` so the two commands can never disagree (previously
+        // `status` so the two commands can never disagree (previously
         // `doctor` ignored the "establishing"/"unknown" state and reported
-        // "shared both ways ✓" while `--show` showed "NOT sharing ✗").
+        // "shared both ways ✓" while the peer listing showed "NOT sharing ✗").
         if connected > 0 {
             use crate::agent::ShareState;
             let by = |s: ShareState| -> Vec<&crate::agent::PeerSync> {

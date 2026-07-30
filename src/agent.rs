@@ -183,7 +183,7 @@ fn normalize_id(s: &str) -> String {
 }
 
 /// Shortest device-id prefix we will act on: one full Syncthing group, which is
-/// what `pair --show` prints and still 35 bits of the peer's certificate hash.
+/// what `status` prints and still 35 bits of the peer's certificate hash.
 const MIN_TARGET_LEN: usize = 7;
 
 /// Resolve a user-typed pairing target to exactly one device id.
@@ -202,7 +202,7 @@ pub fn resolve_device_target(target: &str, candidates: &[(String, String)]) -> R
     if norm.len() < MIN_TARGET_LEN {
         bail!(
             "'{target}' is too short to identify a device — use at least {MIN_TARGET_LEN} \
-             characters of its device id (see `byteferret pair --show`)"
+             characters of its device id (see `byteferret status`)"
         );
     }
 
@@ -261,8 +261,8 @@ pub struct PeerSync {
 }
 
 /// How a connected peer's copy of the vault relates to ours. This is the single
-/// classification that both `pair --show` and `doctor` render, so the two can
-/// never disagree about whether a peer is sharing (the bug where `--show` said
+/// classification that both `status` and `doctor` render, so the two can
+/// never disagree about whether a peer is sharing (the bug where one said
 /// "NOT sharing ✗" while `doctor` reported "shared both ways ✓" for the same
 /// `remote_state == "unknown"` peer).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

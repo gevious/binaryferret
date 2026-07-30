@@ -32,7 +32,7 @@ pub fn emit(value: &serde_json::Value) {
 ///
 /// Device names, folder labels and folder ids all arrive from a *peer*, which
 /// means an unfriendly one can put ANSI escape sequences in them and repaint the
-/// terminal — hiding its own entry from `pair --show`, or forging an extra line
+/// terminal — hiding its own entry from `status`, or forging an extra line
 /// that tells the user to accept it. Control characters are replaced (not
 /// dropped) so the value still reads as suspicious rather than silently
 /// shortening, and the result is length-capped so a very long name can't push
