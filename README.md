@@ -2,12 +2,13 @@
 
 **Peer-to-peer document vault for your own machines.** ByteFerret keeps a folder
 of Markdown notes (and their images, PDFs, and other assets) in sync across your
-Linux desktops — directly, machine-to-machine, with no account and no server in
-the middle. It does this by bundling and orchestrating a private, version-pinned
+Linux and macOS machines — directly, machine-to-machine, with no account and no
+server in the middle. It does this by bundling and orchestrating a private, version-pinned
 [Syncthing](https://syncthing.net/); you drive everything through one small
 `byteferret` CLI.
 
-Ships as a single, statically linked (~1.5 MB) musl binary.
+Ships as a single small binary: statically linked musl (~1.5 MB) on Linux, a
+native Darwin build on macOS.
 
 > **Status: Phase-1 MVP.** The peer-to-peer core (init a vault, pair machines,
 > auto-sync) works today. The always-on hub, web UI, and mobile app are later
@@ -20,22 +21,31 @@ Ships as a single, statically linked (~1.5 MB) musl binary.
 curl -fsSL https://get.byteferret.com/install.sh | sh
 ```
 
-This downloads the prebuilt binary to `~/.local/bin/byteferret`. Options via
+This detects your OS/arch (Linux or macOS, x86_64 or arm64) and downloads the
+latest prebuilt binary to `~/.local/bin/byteferret`. Options via
 environment variables (see [`scripts/install.sh`](scripts/install.sh)):
 
-- `BYTEFERRET_ENABLE_SERVICE=1` — also install & start the systemd user service.
+- `BYTEFERRET_ENABLE_SERVICE=1` — also install & start the user service
+  (systemd on Linux, launchd on macOS).
 - `BYTEFERRET_FROM_SOURCE=1` — build with `cargo` instead of downloading.
 - `BYTEFERRET_PREFIX=/some/dir` — install somewhere other than `~/.local/bin`.
 
 ### From source
 
 ```sh
-cargo build --release   # produces a static musl binary (see .cargo/config.toml)
+# Linux — produces a static musl binary (see .cargo/config.toml)
+cargo build --release
+
+# macOS — override the pinned musl default with this host's Darwin triple
+cargo build --release --target aarch64-apple-darwin   # or x86_64-apple-darwin
+
+# either OS: build the working tree and install it in one step
+sh scripts/local-install.sh
 ```
 
-Requires the `x86_64-unknown-linux-musl` (or `aarch64-…`) Rust target and
-`musl-tools`. `curl` and `tar` must be present at runtime — used once to fetch
-the pinned Syncthing (and Typst, for `publish`).
+On Linux this requires the `x86_64-unknown-linux-musl` (or `aarch64-…`) Rust
+target and `musl-tools`. `curl` and `tar` must be present at runtime — used once
+to fetch the pinned Syncthing (and Typst, for `publish`).
 
 ## Quick start (peer-to-peer)
 
@@ -97,7 +107,7 @@ A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 | `byteferret doctor [--fix]` | Diagnose (and optionally repair) the setup |
 | `byteferret logs [-n N] [-f]` | Show/follow the agent log |
 | `byteferret publish <file> [--pdf] [--email]` | Render a doc to PDF locally |
-| `byteferret service install \| uninstall \| status` | Manage the systemd user service |
+| `byteferret service install \| uninstall \| status` | Manage the user service (systemd/launchd) |
 | `byteferret version` | Agent + pinned Syncthing versions |
 
 Every command accepts `--json` for machine-readable output.
@@ -117,7 +127,7 @@ state in `~/.local/share/byteferret/`. See `.agent/CONTEXT.md` for the architect
 |---|---|
 | `src/` | Rust sources (`main.rs`, `commands/`, `syncthing/`, `publish/`, …). |
 | `scripts/` | `install.sh` (curl-installer) and `e2e-local.sh` (two-agent P2P test). |
-| `.cargo/config.toml` | Pins the default musl build target. |
+| `.cargo/config.toml` | Pins the default (Linux musl) build target. |
 | `.agent/CONTEXT.md` | Architecture/domain context for the codebase. |
 
 ## License

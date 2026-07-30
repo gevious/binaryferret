@@ -51,6 +51,7 @@ fn compile_pdf(typst: &Path, source: &Path, out_pdf: &Path, title: &str) -> Resu
 }
 
 /// Open a mail draft with the PDF attached via `xdg-email`.
+#[cfg(not(target_os = "macos"))]
 fn open_email(pdf: &Path, subject: &str) -> Result<()> {
     let status = Command::new("xdg-email")
         .arg("--subject")
@@ -66,6 +67,21 @@ fn open_email(pdf: &Path, subject: &str) -> Result<()> {
         })?;
     if !status.success() {
         bail!("xdg-email exited with {status}");
+    }
+    Ok(())
+}
+
+/// macOS: `open -a Mail <file>` composes a new message with the file attached.
+/// The subject can't be passed this way, so it is accepted-and-ignored here.
+#[cfg(target_os = "macos")]
+fn open_email(pdf: &Path, _subject: &str) -> Result<()> {
+    let status = Command::new("open")
+        .args(["-a", "Mail"])
+        .arg(pdf)
+        .status()
+        .context("running `open -a Mail`")?;
+    if !status.success() {
+        bail!("open -a Mail exited with {status}");
     }
     Ok(())
 }

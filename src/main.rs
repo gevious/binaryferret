@@ -111,7 +111,7 @@ enum Cmd {
         #[arg(long)]
         email: bool,
     },
-    /// Manage the systemd user service (auto-start on login)
+    /// Manage the user service (systemd/launchd auto-start on login)
     Service {
         #[command(subcommand)]
         action: ServiceAction,

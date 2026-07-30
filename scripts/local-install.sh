@@ -11,8 +11,9 @@
 #   BYTEFERRET_PREFIX          install dir                 (default: ~/.local/bin)
 #   BYTEFERRET_PROFILE         cargo profile: release|dev  (default: release)
 #   BYTEFERRET_TARGET          override the build target triple
-#                                (default: whatever .cargo/config.toml pins)
-#   BYTEFERRET_ENABLE_SERVICE  =1 to install+start the systemd user service
+#                                (default: .cargo/config.toml's pin on Linux,
+#                                 this host's Darwin triple on macOS)
+#   BYTEFERRET_ENABLE_SERVICE  =1 to install+start the user service
 set -eu
 
 PREFIX="${BYTEFERRET_PREFIX:-$HOME/.local/bin}"
@@ -37,6 +38,15 @@ case "$PROFILE" in
 esac
 
 target="${BYTEFERRET_TARGET:-}"
+# .cargo/config.toml pins the Linux musl triple as the default target; on macOS
+# override it with this host's Darwin triple so the build works out of the box.
+if [ -z "$target" ] && [ "$(uname -s)" = "Darwin" ]; then
+  case "$(uname -m)" in
+    x86_64)        target="x86_64-apple-darwin" ;;
+    arm64|aarch64) target="aarch64-apple-darwin" ;;
+    *) die "unsupported architecture '$(uname -m)' (need x86_64 or arm64)." ;;
+  esac
+fi
 [ -n "$target" ] && set -- "$@" --target "$target"
 
 log "Building byteferret from source ($crate, profile=$PROFILE${target:+, target=$target})…"
@@ -64,7 +74,7 @@ esac
 
 if [ "${BYTEFERRET_ENABLE_SERVICE:-0}" = "1" ]; then
   log ""
-  log "Setting up the systemd user service…"
+  log "Setting up the user service (auto-start on login)…"
   "$PREFIX/byteferret" service install --now
 else
   log ""
