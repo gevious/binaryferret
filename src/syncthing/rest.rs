@@ -184,6 +184,17 @@ impl Client {
         Ok(serde_json::from_value(v).unwrap_or_default())
     }
 
+    /// Dismiss a pending pairing request (the `pair --reject` action). Removes
+    /// the device from Syncthing's pending list without adding it as a peer.
+    pub fn dismiss_pending_device(&self, device: &str) -> Result<()> {
+        self.req(
+            "DELETE",
+            &format!("/rest/cluster/pending/devices?device={}", urlencode(device)),
+            None,
+        )
+        .map(|_| ())
+    }
+
     pub fn connections(&self) -> Result<BTreeMap<String, Connection>> {
         let c: Connections = self.get_typed("/rest/system/connections")?;
         Ok(c.connections)

@@ -150,6 +150,38 @@ pub struct PeerSync {
     pub completion: f64,
 }
 
+/// How a connected peer's copy of the vault relates to ours. This is the single
+/// classification that both `pair --show` and `doctor` render, so the two can
+/// never disagree about whether a peer is sharing (the bug where `--show` said
+/// "NOT sharing ✗" while `doctor` reported "shared both ways ✓" for the same
+/// `remote_state == "unknown"` peer).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ShareState {
+    /// Peer is offline — sharing can't be assessed.
+    Offline,
+    /// Connected and actively sharing the vault back (`remote_state == "valid"`).
+    Sharing,
+    /// Connected but the peer has NOT shared the vault back
+    /// (`remote_state` "notSharing"/"paused") — the silent stall.
+    NotSharingBack,
+    /// Connected, but the share isn't confirmed yet (`remote_state` "unknown" or
+    /// unavailable). Normal for a moment right after a link comes up; if it
+    /// persists it means the peer still hasn't shared the vault back.
+    Establishing,
+}
+
+impl ShareState {
+    /// Stable machine-readable tag for `--json` consumers.
+    pub fn tag(self) -> &'static str {
+        match self {
+            ShareState::Offline => "offline",
+            ShareState::Sharing => "sharing",
+            ShareState::NotSharingBack => "notSharingBack",
+            ShareState::Establishing => "establishing",
+        }
+    }
+}
+
 impl PeerSync {
     /// Human label: the device name, or a short id prefix when it has no name.
     pub fn label(&self) -> String {
@@ -160,16 +192,30 @@ impl PeerSync {
         }
     }
 
+    /// The single source of truth for a peer's vault-share status. Every command
+    /// derives its verdict from this so their reports always agree.
+    pub fn share_state(&self) -> ShareState {
+        if !self.connected {
+            ShareState::Offline
+        } else if self.remote_state == "valid" {
+            ShareState::Sharing
+        } else if self.remote_state == "notSharing" || self.remote_state == "paused" {
+            ShareState::NotSharingBack
+        } else {
+            ShareState::Establishing
+        }
+    }
+
     /// True only when the peer is connected AND sharing our vault back.
     pub fn sharing(&self) -> bool {
-        self.connected && self.remote_state == "valid"
+        self.share_state() == ShareState::Sharing
     }
 
     /// A connected peer that has not shared the vault back (the stall case).
-    /// Excludes the transient "unknown" state to avoid false alarms right after
-    /// a connection comes up.
+    /// Excludes the transient "unknown"/establishing state to avoid false alarms
+    /// right after a connection comes up.
     pub fn stalled(&self) -> bool {
-        self.connected && (self.remote_state == "notSharing" || self.remote_state == "paused")
+        self.share_state() == ShareState::NotSharingBack
     }
 }
 
@@ -246,6 +292,17 @@ mod tests {
         assert!(!peer("a", true, "valid").stalled());
         assert!(!peer("a", true, "unknown").stalled()); // transient, not a stall
         assert!(!peer("a", false, "notSharing").stalled()); // offline isn't a stall
+    }
+
+    #[test]
+    fn share_state_classifies_every_remote_state() {
+        use super::ShareState::*;
+        assert_eq!(peer("a", true, "valid").share_state(), Sharing);
+        assert_eq!(peer("a", true, "notSharing").share_state(), NotSharingBack);
+        assert_eq!(peer("a", true, "paused").share_state(), NotSharingBack);
+        assert_eq!(peer("a", true, "unknown").share_state(), Establishing);
+        assert_eq!(peer("a", true, "").share_state(), Establishing); // completion call errored
+        assert_eq!(peer("a", false, "valid").share_state(), Offline);
     }
 
     #[test]

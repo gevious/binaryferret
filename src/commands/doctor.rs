@@ -265,26 +265,29 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
 
         // The check that catches the silent stall: a peer is connected, so
         // `peers` looks fine, but it never shared the vault back — so nothing
-        // ever syncs. (This is exactly the state that previously reported
-        // "healthy" while files stayed different across machines.)
+        // ever syncs. Uses the same `share_state()` classification as
+        // `pair --show` so the two commands can never disagree (previously
+        // `doctor` ignored the "establishing"/"unknown" state and reported
+        // "shared both ways ✓" while `--show` showed "NOT sharing ✗").
         if connected > 0 {
-            let stalled: Vec<&crate::agent::PeerSync> =
-                peers.iter().filter(|p| p.stalled()).collect();
-            if stalled.is_empty() {
-                checks.push(Check::new(
-                    Level::Ok,
-                    "vault share",
-                    format!("shared both ways with {connected} peer(s)"),
-                ));
-            } else {
-                let who = stalled.iter().map(|p| p.label()).collect::<Vec<_>>().join(", ");
+            use crate::agent::ShareState;
+            let by = |s: ShareState| -> Vec<&crate::agent::PeerSync> {
+                peers.iter().filter(|p| p.share_state() == s).collect()
+            };
+            let stalled = by(ShareState::NotSharingBack);
+            let establishing = by(ShareState::Establishing);
+            let names = |ps: &[&crate::agent::PeerSync]| {
+                ps.iter().map(|p| p.label()).collect::<Vec<_>>().join(", ")
+            };
+            if !stalled.is_empty() {
                 checks.push(
                     Check::new(
                         Level::Warn,
                         "vault share",
                         format!(
-                            "{} connected peer(s) not sharing the vault back: {who}",
-                            stalled.len()
+                            "{} connected peer(s) not sharing the vault back: {}",
+                            stalled.len(),
+                            names(&stalled)
                         ),
                     )
                     .with_hint(
@@ -292,6 +295,28 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
                          then `byteferret pair --with <this-device-id>` to share it back",
                     ),
                 );
+            } else if !establishing.is_empty() {
+                checks.push(
+                    Check::new(
+                        Level::Warn,
+                        "vault share",
+                        format!(
+                            "{} peer(s) still establishing the share (connected, not yet in sync): {}",
+                            establishing.len(),
+                            names(&establishing)
+                        ),
+                    )
+                    .with_hint(
+                        "give it a moment and re-check `byteferret status`; if it persists, run \
+                         `byteferret pair --with <this-device-id>` on that machine to share the vault back",
+                    ),
+                );
+            } else {
+                checks.push(Check::new(
+                    Level::Ok,
+                    "vault share",
+                    format!("shared both ways with {connected} peer(s)"),
+                ));
             }
         }
     }

@@ -52,13 +52,17 @@ enum Cmd {
         /// Approve pending pairing request(s)
         #[arg(long)]
         accept: bool,
+        /// Reject (dismiss) pending pairing request(s)
+        #[arg(long)]
+        reject: bool,
         /// Explicit peer sync address, e.g. tcp://host:22000 (manual/overlay pairing)
         #[arg(long)]
         address: Option<String>,
         /// Friendly name to record for the peer
         #[arg(long)]
         name: Option<String>,
-        /// Device id to accept (with --accept); omit to accept all pending
+        /// Target for --accept/--reject: a hostname or device id; omit to act on all pending
+        #[arg(value_name = "HOSTNAME-OR-ID")]
         id: Option<String>,
     },
     /// Show agent, peers, sync state, conflicts
@@ -130,6 +134,7 @@ fn main() {
             show,
             with,
             accept,
+            reject,
             address,
             name,
             id,
@@ -137,6 +142,7 @@ fn main() {
             *show,
             with.as_deref(),
             *accept,
+            *reject,
             id.as_deref(),
             address.as_deref(),
             name.as_deref(),
