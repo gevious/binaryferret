@@ -1,11 +1,11 @@
-# BinaryFerret
+# ByteFerret
 
-**Peer-to-peer document vault for your own machines.** BinaryFerret keeps a folder
+**Peer-to-peer document vault for your own machines.** ByteFerret keeps a folder
 of Markdown notes (and their images, PDFs, and other assets) in sync across your
 Linux desktops — directly, machine-to-machine, with no account and no server in
 the middle. It does this by bundling and orchestrating a private, version-pinned
 [Syncthing](https://syncthing.net/); you drive everything through one small
-`binaryferret` CLI.
+`byteferret` CLI.
 
 Ships as a single, statically linked (~1.5 MB) musl binary.
 
@@ -17,15 +17,15 @@ Ships as a single, statically linked (~1.5 MB) musl binary.
 ## Install
 
 ```sh
-curl -fsSL https://get.binaryferret.com/install.sh | sh
+curl -fsSL https://get.byteferret.com/install.sh | sh
 ```
 
-This downloads the prebuilt binary to `~/.local/bin/binaryferret`. Options via
+This downloads the prebuilt binary to `~/.local/bin/byteferret`. Options via
 environment variables (see [`scripts/install.sh`](scripts/install.sh)):
 
-- `BINARYFERRET_ENABLE_SERVICE=1` — also install & start the systemd user service.
-- `BINARYFERRET_FROM_SOURCE=1` — build with `cargo` instead of downloading.
-- `BINARYFERRET_PREFIX=/some/dir` — install somewhere other than `~/.local/bin`.
+- `BYTEFERRET_ENABLE_SERVICE=1` — also install & start the systemd user service.
+- `BYTEFERRET_FROM_SOURCE=1` — build with `cargo` instead of downloading.
+- `BYTEFERRET_PREFIX=/some/dir` — install somewhere other than `~/.local/bin`.
 
 ### From source
 
@@ -40,19 +40,19 @@ the pinned Syncthing (and Typst, for `publish`).
 ## Quick start (peer-to-peer)
 
 ```sh
-binaryferret init ~/vault            # create a vault (scaffolds a starter structure)
-binaryferret service install --now   # auto-start the agent on login (optional)
+byteferret init ~/vault            # create a vault (scaffolds a starter structure)
+byteferret service install --now   # auto-start the agent on login (optional)
 
 # On machine A:
-binaryferret pair --show             # prints this machine's device ID
+byteferret pair --show             # prints this machine's device ID
 
 # On machine B:
-binaryferret pair --with <A's-device-id>
+byteferret pair --with <A's-device-id>
 
 # Back on machine A:
-binaryferret pair --accept           # approve the request
+byteferret pair --accept           # approve the request
 
-binaryferret status                  # peers, sync state, conflicts
+byteferret status                  # peers, sync state, conflicts
 ```
 
 Edit anything in `~/vault` and it syncs to your paired machines automatically.
@@ -63,15 +63,15 @@ A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 
 | Command | What it does |
 |---|---|
-| `binaryferret start` / `stop` | Start/stop the managed Syncthing (idempotent) |
-| `binaryferret init <path> [--existing]` | Create or attach a vault |
-| `binaryferret pair --show \| --with <id> \| --accept` | Peer-to-peer pairing |
-| `binaryferret status` | Agent health, peers, sync state, conflicts |
-| `binaryferret doctor [--fix]` | Diagnose (and optionally repair) the setup |
-| `binaryferret logs [-n N] [-f]` | Show/follow the agent log |
-| `binaryferret publish <file> [--pdf] [--email]` | Render a doc to PDF locally |
-| `binaryferret service install \| uninstall \| status` | Manage the systemd user service |
-| `binaryferret version` | Agent + pinned Syncthing versions |
+| `byteferret start` / `stop` | Start/stop the managed Syncthing (idempotent) |
+| `byteferret init <path> [--existing]` | Create or attach a vault |
+| `byteferret pair --show \| --with <id> \| --accept` | Peer-to-peer pairing |
+| `byteferret status` | Agent health, peers, sync state, conflicts |
+| `byteferret doctor [--fix]` | Diagnose (and optionally repair) the setup |
+| `byteferret logs [-n N] [-f]` | Show/follow the agent log |
+| `byteferret publish <file> [--pdf] [--email]` | Render a doc to PDF locally |
+| `byteferret service install \| uninstall \| status` | Manage the systemd user service |
+| `byteferret version` | Agent + pinned Syncthing versions |
 
 Every command accepts `--json` for machine-readable output.
 
@@ -80,8 +80,8 @@ Every command accepts `--json` for machine-readable output.
 The agent never edits Syncthing's config files directly — it downloads a pinned
 Syncthing, generates its keys, runs it detached bound to localhost with a random
 API key (`0600`), and drives it entirely over the localhost REST API. Config
-lives in `~/.config/binaryferret/` (`config.toml` + a `0600` `secrets` file); managed
-state in `~/.local/share/binaryferret/`. See `.agent/CONTEXT.md` for the architecture
+lives in `~/.config/byteferret/` (`config.toml` + a `0600` `secrets` file); managed
+state in `~/.local/share/byteferret/`. See `.agent/CONTEXT.md` for the architecture
 (and `DESIGN.md` in the docs repo for the full design).
 
 ## Repository layout

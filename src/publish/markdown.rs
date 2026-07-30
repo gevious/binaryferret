@@ -1,6 +1,6 @@
 //! A small, well-scoped Markdown → Typst converter (FR-19, local publish path).
 //!
-//! It covers the subset a BinaryFerret vault actually uses: ATX headings, bold /
+//! It covers the subset a ByteFerret vault actually uses: ATX headings, bold /
 //! italic, inline code, fenced code blocks, bullet + ordered lists, links,
 //! images, `[[wiki-links]]`, block quotes and horizontal rules. Anything else
 //! is passed through as escaped literal text, so an unsupported construct

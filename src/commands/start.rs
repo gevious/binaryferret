@@ -11,12 +11,12 @@ pub fn start() -> Result<()> {
     let version = ctx.client.version()?;
     ctx.config.save(&ctx.paths)?;
 
-    say("BinaryFerret agent running.");
+    say("ByteFerret agent running.");
     say(&format!("  syncthing:  {version}  ({})", ctx.config.gui_address));
     say(&format!("  device id:  {id}"));
     match &ctx.config.vault_path {
         Some(v) => say(&format!("  vault:      {v}")),
-        None => say("  vault:      (none yet — run `binaryferret init <path>`)"),
+        None => say("  vault:      (none yet — run `byteferret init <path>`)"),
     }
     emit(&json!({
         "ok": true, "running": true, "deviceId": id,

@@ -8,7 +8,7 @@ use crate::syncthing::process;
 /// Stop the managed Syncthing. Idempotent.
 pub fn stop() -> Result<()> {
     let res = process::stop(&Paths::resolve())?;
-    say(if res.was_running { "BinaryFerret agent stopped." } else { "BinaryFerret agent was not running." });
+    say(if res.was_running { "ByteFerret agent stopped." } else { "ByteFerret agent was not running." });
     emit(&json!({ "ok": true, "wasRunning": res.was_running }));
     Ok(())
 }

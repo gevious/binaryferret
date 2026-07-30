@@ -52,6 +52,21 @@ struct Connections {
 pub struct PendingDevice {
     #[serde(default)]
     pub name: String,
+    #[serde(default)]
+    pub address: String,
+}
+
+/// Per-device view of how complete our shared folder is on the *remote* side.
+/// `remote_state` is Syncthing's coarse label for the peer's copy of the folder:
+/// "valid" (they share it), "notSharing" (they never added it), "paused", or
+/// "unknown". The whole "connected but nothing syncs" trap is remote_state
+/// sitting at "notSharing".
+#[derive(Deserialize)]
+pub struct Completion {
+    #[serde(default)]
+    pub completion: f64,
+    #[serde(rename = "remoteState", default)]
+    pub remote_state: String,
 }
 
 impl Client {
@@ -136,6 +151,16 @@ impl Client {
 
     pub fn folder_status(&self, id: &str) -> Result<FolderStatus> {
         self.get_typed(&format!("/rest/db/status?folder={}", urlencode(id)))
+    }
+
+    /// How complete our folder is on a specific peer — the check that reveals a
+    /// peer connected but not actually sharing the vault back.
+    pub fn folder_completion(&self, folder: &str, device: &str) -> Result<Completion> {
+        self.get_typed(&format!(
+            "/rest/db/completion?folder={}&device={}",
+            urlencode(folder),
+            urlencode(device)
+        ))
     }
 
     // --- devices ---

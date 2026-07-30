@@ -1,4 +1,4 @@
-//! `binaryferret doctor` — a one-shot health check over the agent's moving parts
+//! `byteferret doctor` — a one-shot health check over the agent's moving parts
 //! (FR-27): the managed Syncthing binary, config + secrets (and their
 //! permissions), the running process + REST endpoint, the vault folder, peer
 //! connectivity, and any sync-conflict files. With `--fix` it applies the safe,
@@ -12,7 +12,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::json;
 
 use crate::agent::{ensure_started, load_context};
 use crate::config::Secrets;
@@ -124,7 +124,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
     } else {
         checks.push(
             Check::new(Level::Fail, "syncthing binary", "not downloaded yet")
-                .with_hint("run `binaryferret start` — it downloads the pinned Syncthing on first use"),
+                .with_hint("run `byteferret start` — it downloads the pinned Syncthing on first use"),
         );
     }
 
@@ -138,7 +138,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
     } else {
         checks.push(
             Check::new(Level::Warn, "config", "no config.toml yet")
-                .with_hint("run `binaryferret init <path>` to create a vault"),
+                .with_hint("run `byteferret init <path>` to create a vault"),
         );
     }
 
@@ -154,7 +154,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
                         "secrets perms",
                         format!("{:04o} (should be 0600)", mode),
                     )
-                    .with_hint("run `binaryferret doctor --fix` to correct it"),
+                    .with_hint("run `byteferret doctor --fix` to correct it"),
                 );
             }
         }
@@ -183,7 +183,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
     if !running {
         checks.push(
             Check::new(Level::Warn, "agent", "stopped")
-                .with_hint("run `binaryferret start` (or `binaryferret doctor --fix`)"),
+                .with_hint("run `byteferret start` (or `byteferret doctor --fix`)"),
         );
         return checks; // downstream checks need a live REST endpoint
     }
@@ -213,7 +213,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
     match &ctx.config.vault_path {
         None => checks.push(
             Check::new(Level::Warn, "vault", "no vault configured")
-                .with_hint("run `binaryferret init <path>`"),
+                .with_hint("run `byteferret init <path>`"),
         ),
         Some(v) => {
             if Path::new(v).is_dir() {
@@ -225,7 +225,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
                         "vault",
                         format!("configured path missing: {v}"),
                     )
-                    .with_hint("re-create it or run `binaryferret init <path> --existing`"),
+                    .with_hint("re-create it or run `byteferret init <path> --existing`"),
                 );
             }
             match ctx.client.get_folder(&ctx.config.folder_id) {
@@ -240,54 +240,59 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
                         "folder",
                         format!("'{}' not registered with Syncthing", ctx.config.folder_id),
                     )
-                    .with_hint("run `binaryferret init <path>` to (re)register it"),
+                    .with_hint("run `byteferret init <path>` to (re)register it"),
                 ),
                 Err(_) => {}
             }
         }
     }
 
-    // --- peers / connectivity (informational) ---
-    if let (Ok(devices), Ok(conns), Ok(my_id)) = (
-        ctx.client.get_devices(),
-        ctx.client.connections(),
-        ctx.client.my_device_id(),
-    ) {
-        let peers: Vec<&Value> = devices
-            .iter()
-            .filter(|d| {
-                d.get("deviceID")
-                    .and_then(Value::as_str)
-                    .map(|id| id != my_id)
-                    .unwrap_or(false)
-            })
-            .collect();
-        let connected = peers
-            .iter()
-            .filter(|d| {
-                d.get("deviceID")
-                    .and_then(Value::as_str)
-                    .and_then(|id| conns.get(id))
-                    .map(|c| c.connected)
-                    .unwrap_or(false)
-            })
-            .count();
-        if peers.is_empty() {
-            checks.push(
-                Check::new(Level::Warn, "peers", "none paired")
-                    .with_hint("pair a machine with `binaryferret pair --show` / `--with`"),
-            );
-        } else {
-            let lvl = if connected > 0 {
-                Level::Ok
+    // --- peers / connectivity + vault sharing ---
+    let peers = crate::agent::peer_status(&ctx).unwrap_or_default();
+    if peers.is_empty() {
+        checks.push(
+            Check::new(Level::Warn, "peers", "none paired")
+                .with_hint("pair a machine with `byteferret pair --show` / `--with`"),
+        );
+    } else {
+        let connected = peers.iter().filter(|p| p.connected).count();
+        let lvl = if connected > 0 { Level::Ok } else { Level::Warn };
+        checks.push(Check::new(
+            lvl,
+            "peers",
+            format!("{connected}/{} connected", peers.len()),
+        ));
+
+        // The check that catches the silent stall: a peer is connected, so
+        // `peers` looks fine, but it never shared the vault back — so nothing
+        // ever syncs. (This is exactly the state that previously reported
+        // "healthy" while files stayed different across machines.)
+        if connected > 0 {
+            let stalled: Vec<&crate::agent::PeerSync> =
+                peers.iter().filter(|p| p.stalled()).collect();
+            if stalled.is_empty() {
+                checks.push(Check::new(
+                    Level::Ok,
+                    "vault share",
+                    format!("shared both ways with {connected} peer(s)"),
+                ));
             } else {
-                Level::Warn
-            };
-            checks.push(Check::new(
-                lvl,
-                "peers",
-                format!("{connected}/{} connected", peers.len()),
-            ));
+                let who = stalled.iter().map(|p| p.label()).collect::<Vec<_>>().join(", ");
+                checks.push(
+                    Check::new(
+                        Level::Warn,
+                        "vault share",
+                        format!(
+                            "{} connected peer(s) not sharing the vault back: {who}",
+                            stalled.len()
+                        ),
+                    )
+                    .with_hint(
+                        "on that machine run `byteferret init <path>` (if it has no vault), \
+                         then `byteferret pair --with <this-device-id>` to share it back",
+                    ),
+                );
+            }
         }
     }
 

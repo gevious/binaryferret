@@ -17,7 +17,7 @@ pub fn status() -> Result<()> {
     let running = process::is_running(&ctx.paths, &ctx.config.gui_address, key);
 
     if !running {
-        say("agent:      stopped   (run `binaryferret start`)");
+        say("agent:      stopped   (run `byteferret start`)");
         if let Some(v) = &ctx.config.vault_path {
             say(&format!("vault:      {v}"));
         }
@@ -68,7 +68,7 @@ pub fn status() -> Result<()> {
     say(&format!("device id:  {device_id}"));
     match &ctx.config.vault_path {
         Some(v) => say(&format!("vault:      {v}")),
-        None => say("vault:      (none — run `binaryferret init`)"),
+        None => say("vault:      (none — run `byteferret init`)"),
     }
     if ctx.config.vault_path.is_some() {
         let extra = if need_bytes > 0 { format!("  ({need_bytes} bytes to sync)") } else { String::new() };
@@ -76,7 +76,7 @@ pub fn status() -> Result<()> {
     }
     say("mode:       p2p");
     if peers.is_empty() {
-        say("peers:      none (run `binaryferret pair --show`)");
+        say("peers:      none (run `byteferret pair --show`)");
     } else {
         say("peers:");
         for p in &peers {
@@ -93,7 +93,7 @@ pub fn status() -> Result<()> {
         }
     }
     if !pending_ids.is_empty() {
-        say(&format!("pending:    {} device request(s) — run `binaryferret pair --accept`", pending_ids.len()));
+        say(&format!("pending:    {} device request(s) — run `byteferret pair --accept`", pending_ids.len()));
         for id in &pending_ids {
             let nm = pending.get(id).map(|p| p.name.as_str()).unwrap_or("");
             say(&format!("  - {nm} ({}…)", id.chars().take(7).collect::<String>()));

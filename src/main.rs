@@ -1,4 +1,4 @@
-//! binaryferret — P2P document vault agent (Path A, peer-to-peer).
+//! byteferret — P2P document vault agent (Path A, peer-to-peer).
 //! Orchestrates a bundled, version-pinned Syncthing to sync a vault directly
 //! between a user's own machines. See RUN-TWO-DESKTOPS.md.
 
@@ -16,7 +16,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
 #[command(
-    name = "binaryferret",
+    name = "byteferret",
     version,
     about = "P2P document vault agent (peer-to-peer sync via Syncthing)"
 )]

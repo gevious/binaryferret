@@ -23,7 +23,7 @@ fn release_target() -> Result<&'static str> {
         "x86_64" => Ok("x86_64-unknown-linux-musl"),
         "aarch64" => Ok("aarch64-unknown-linux-musl"),
         other => bail!(
-            "unsupported architecture '{other}' — BinaryFerret v1 supports x86_64 and arm64 Linux"
+            "unsupported architecture '{other}' — ByteFerret v1 supports x86_64 and arm64 Linux"
         ),
     }
 }

@@ -51,15 +51,15 @@ pub fn load_context() -> Result<Context> {
 }
 
 /// Applies privacy / connectivity toggles that map to documented options:
-///  - BINARYFERRET_SYNC_ADDRESS       → pin Syncthing's sync listen address (also
+///  - BYTEFERRET_SYNC_ADDRESS       → pin Syncthing's sync listen address (also
 ///    lets two isolated agents coexist on one host for testing).
-///  - BINARYFERRET_DISCOVERY_PUBLIC=false → the getting-started `discovery.public`
+///  - BYTEFERRET_DISCOVERY_PUBLIC=false → the getting-started `discovery.public`
 ///    off switch: no global/local announce, no relays (LAN/VPN only).
 ///
 /// Both are no-ops when unset, so real desktops keep Syncthing's defaults.
 fn apply_runtime_toggles(client: &Client) -> Result<()> {
-    let sync_addr = std::env::var("BINARYFERRET_SYNC_ADDRESS").ok().filter(|s| !s.is_empty());
-    let public = std::env::var("BINARYFERRET_DISCOVERY_PUBLIC").ok();
+    let sync_addr = std::env::var("BYTEFERRET_SYNC_ADDRESS").ok().filter(|s| !s.is_empty());
+    let public = std::env::var("BYTEFERRET_DISCOVERY_PUBLIC").ok();
     if sync_addr.is_none() && public.is_none() {
         return Ok(());
     }
@@ -118,7 +118,7 @@ pub fn add_peer(
     client.put_device(&device)?;
 
     match client.get_folder(folder_id)? {
-        None => say(&format!("(no vault folder '{folder_id}' yet — run `binaryferret init` first; peer added regardless)")),
+        None => say(&format!("(no vault folder '{folder_id}' yet — run `byteferret init` first; peer added regardless)")),
         Some(mut folder) => {
             let already = folder
                 .get("devices")
@@ -136,6 +136,72 @@ pub fn add_peer(
     Ok(())
 }
 
+/// A peer's connectivity plus whether it is actually sharing the vault back.
+/// The `remote_state`/`sharing` distinction is what separates a healthy link
+/// from the silent stall where two machines are connected but one never shared
+/// the folder, so nothing ever transfers.
+pub struct PeerSync {
+    pub id: String,
+    pub name: String,
+    pub connected: bool,
+    /// Syncthing's view of our folder on the peer: "valid", "notSharing",
+    /// "paused", "unknown", or "" when the peer is offline.
+    pub remote_state: String,
+    pub completion: f64,
+}
+
+impl PeerSync {
+    /// Human label: the device name, or a short id prefix when it has no name.
+    pub fn label(&self) -> String {
+        if self.name.is_empty() {
+            self.id.chars().take(7).collect()
+        } else {
+            self.name.clone()
+        }
+    }
+
+    /// True only when the peer is connected AND sharing our vault back.
+    pub fn sharing(&self) -> bool {
+        self.connected && self.remote_state == "valid"
+    }
+
+    /// A connected peer that has not shared the vault back (the stall case).
+    /// Excludes the transient "unknown" state to avoid false alarms right after
+    /// a connection comes up.
+    pub fn stalled(&self) -> bool {
+        self.connected && (self.remote_state == "notSharing" || self.remote_state == "paused")
+    }
+}
+
+/// Summarize every paired peer (excluding this device): connection state and,
+/// for connected peers, whether they share the vault back. Shared by `pair
+/// --show` and `doctor` so both surface the same truth.
+pub fn peer_status(ctx: &Context) -> Result<Vec<PeerSync>> {
+    let my_id = ctx.client.my_device_id()?;
+    let conns = ctx.client.connections()?;
+    let mut out = Vec::new();
+    for d in ctx.client.get_devices()? {
+        let id = match d.get("deviceID").and_then(Value::as_str) {
+            Some(i) if i != my_id => i.to_string(),
+            _ => continue, // skip self / malformed entries
+        };
+        let name = d.get("name").and_then(Value::as_str).unwrap_or("").to_string();
+        let connected = conns.get(&id).map(|c| c.connected).unwrap_or(false);
+        // Only ask the remote-completion question for connected peers — it is
+        // meaningless (and a wasted round trip) when the peer is offline.
+        let (remote_state, completion) = if connected {
+            match ctx.client.folder_completion(&ctx.config.folder_id, &id) {
+                Ok(c) => (c.remote_state, c.completion),
+                Err(_) => (String::new(), 0.0),
+            }
+        } else {
+            (String::new(), 0.0)
+        };
+        out.push(PeerSync { id, name, connected, remote_state, completion });
+    }
+    Ok(out)
+}
+
 /// Standard folder settings for the vault (near-real-time sync, FR-6/FR-9/FR-17).
 pub fn vault_folder_config(id: &str, label: &str, path: &str, peers: &[String]) -> Value {
     let devices: Vec<Value> = peers.iter().map(|p| json!({ "deviceID": p })).collect();
@@ -150,4 +216,41 @@ pub fn vault_folder_config(id: &str, label: &str, path: &str, peers: &[String]) 
         "devices": devices,
         "versioning": { "type": "" }, // v1: minimal on desktop; the hub is canonical history
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PeerSync;
+
+    fn peer(name: &str, connected: bool, remote_state: &str) -> PeerSync {
+        PeerSync {
+            id: "ABCDEFG-HIJKLMN".to_string(),
+            name: name.to_string(),
+            connected,
+            remote_state: remote_state.to_string(),
+            completion: 0.0,
+        }
+    }
+
+    #[test]
+    fn sharing_requires_connected_and_valid() {
+        assert!(peer("a", true, "valid").sharing());
+        assert!(!peer("a", true, "notSharing").sharing());
+        assert!(!peer("a", false, "valid").sharing()); // offline
+    }
+
+    #[test]
+    fn stalled_flags_connected_but_not_sharing() {
+        assert!(peer("a", true, "notSharing").stalled());
+        assert!(peer("a", true, "paused").stalled());
+        assert!(!peer("a", true, "valid").stalled());
+        assert!(!peer("a", true, "unknown").stalled()); // transient, not a stall
+        assert!(!peer("a", false, "notSharing").stalled()); // offline isn't a stall
+    }
+
+    #[test]
+    fn label_falls_back_to_short_id() {
+        assert_eq!(peer("laptop", true, "valid").label(), "laptop");
+        assert_eq!(peer("", true, "valid").label(), "ABCDEFG");
+    }
 }
