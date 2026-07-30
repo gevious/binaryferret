@@ -22,6 +22,10 @@ flate2 = "1"
 tar = "0.4"
 libc = "0.2"
 anyhow = "1"
+# Verifies the pinned SHA-256 of the Syncthing/Typst downloads before they are
+# extracted or run. Pure Rust with no C dependency, so the static musl build is
+# unaffected; `curl` alone cannot vouch for what it fetched.
+sha2 = { version = "0.10", default-features = false }
 
 [profile.release]
 strip = true

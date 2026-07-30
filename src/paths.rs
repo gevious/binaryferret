@@ -79,3 +79,11 @@ pub fn gui_address_override() -> Option<String> {
 pub fn systemd_user_unit() -> PathBuf {
     xdg("XDG_CONFIG_HOME", ".config").join("systemd/user/byteferret.service")
 }
+
+/// Path of the launchd *user* agent plist the agent installs on macOS — the
+/// launchd equivalent of `systemd_user_unit()`. launchd only loads per-user
+/// agents from `~/Library/LaunchAgents/`, so this is fixed there (independent of
+/// BYTEFERRET_CONFIG_DIR / XDG, which macOS launchd does not consult).
+pub fn launchd_agent_plist() -> PathBuf {
+    home().join("Library/LaunchAgents/com.byteferret.agent.plist")
+}

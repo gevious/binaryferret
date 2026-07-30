@@ -2,8 +2,9 @@
 //!  - config.toml  — shareable, human-editable (vault path, folder id, gui bind)
 //!  - secrets      — 0600, never logged (Syncthing REST API key)
 
-use std::fs;
-use std::os::unix::fs::PermissionsExt;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::Path;
 
 use anyhow::{Context, Result};
@@ -90,8 +91,22 @@ impl Secrets {
             "# ByteFerret secrets — DO NOT SHARE. Permissions are enforced to 0600.\n\n{}",
             toml::to_string(&raw)?
         );
-        fs::write(&paths.secrets_file, body)?;
-        fs::set_permissions(&paths.secrets_file, fs::Permissions::from_mode(0o600))?;
+        // Create the file already at 0600 rather than writing it and tightening
+        // afterwards: the write-then-chmod order leaves the API key readable by
+        // any local user for the moment in between, which is long enough for a
+        // watcher on the config dir to win the race.
+        let mut f = OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&paths.secrets_file)
+            .with_context(|| format!("writing {}", paths.secrets_file.display()))?;
+        // `mode()` only applies when the file is created, so an existing file
+        // keeps whatever (possibly loose) mode it had — tighten it before the
+        // new key lands in it.
+        f.set_permissions(fs::Permissions::from_mode(0o600))?;
+        f.write_all(body.as_bytes())?;
         Ok(())
     }
 }

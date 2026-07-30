@@ -26,16 +26,28 @@ Top-level `*.md` files are project docs. Paths below are relative to `agent/`.
 
 ## Data flow (pair → sync)
 `pair --show` prints device id → other machine `pair --with <id>` (adds device +
-shares folder) → first machine `pair --accept` (approves the pending request, shares
-back) → Syncthing connects both directions and converges. Current-state sync is
-automatic and continuous; the agent never runs a sync loop of its own.
+shares a folder) → first machine `pair <id> --accept` (approves the *connection*)
+→ `pair <id> --accept --folder <f>` (grants one folder) → Syncthing connects both
+directions and converges. Current-state sync is automatic and continuous; the
+agent never runs a sync loop of its own.
+
+Pairing is deliberately two decisions: admitting a machine grants access to no
+folders, and each folder is then accepted or rejected per peer (`--folder`,
+repeatable, or `--all-folders`). Both verbs require an explicit device-id target
+and match on the id only — never on the peer-supplied name — refusing ambiguous
+prefixes instead of guessing, so a stranger in the pending list cannot be swept
+in alongside the machine the user meant.
 
 ## Module map (`src/`)
 - `main.rs` — clap CLI definition + dispatch + top-level error handling.
 - `commands/` — one file per command (`start stop init pair status version doctor logs
   publish service`); thin, express intent, print human + `--json`.
-- `agent.rs` — orchestration facade: `ensure_started()` (start + persist),
-  `add_peer()` and `vault_folder_config()` (shared pair/init logic), runtime toggles.
+- `agent.rs` — orchestration facade: `ensure_started()` (start + persist), the
+  device/folder primitives `add_device()` / `share_folder()` / `unshare_folder()` /
+  `create_shared_folder()`, `resolve_device_target()` (id-only, ambiguity-refusing
+  target matching), `vault_folder_config()`, runtime toggles.
+- `fetch.rs` — `download_verified()`: curl + pinned-SHA-256 check before anything is
+  extracted or run. The per-asset hashes live beside each downloader.
 - `service.rs` — systemd user-unit *content* generation (pure, unit-tested);
   `commands/service.rs` owns all `systemctl --user` interaction.
 - `publish/markdown.rs` — pure, unit-tested Markdown→Typst converter (vault subset).
@@ -50,15 +62,20 @@ automatic and continuous; the agent never runs a sync loop of its own.
   `serde_json::Value` to preserve Syncthing's own fields.
 - `paths.rs` — resolve XDG paths + `BYTEFERRET_*` overrides + pinned constants.
 - `config.rs` — `config.toml` (shareable) and `secrets` (0600) load/save.
-- `output.rs` — human/json output (global json flag). `fsutil.rs` — path expand +
-  conflict-file scan.
+- `output.rs` — human/json output (global json flag) + `sanitize()`, which every
+  peer-supplied string (device names, folder labels/ids, conflict filenames) passes
+  through before reaching a terminal. `fsutil.rs` — path expand, conflict-file scan,
+  and `safe_dir_name()` for reducing a peer's folder label to one safe component.
 
 ## Why these deps / build choices
 - **ureq without TLS**: Syncthing REST is plain HTTP over localhost, so no TLS stack
   is linked. The one HTTPS fetch (the Syncthing tarball) uses system `curl`, keeping
   the static musl build free of ring/OpenSSL. `curl` is a first-run-only dependency.
+  Because the agent never sees that TLS session, the download's pinned SHA-256 —
+  not the transport — is what establishes the bytes are what upstream published.
 - **clap** (CLI), **serde/serde_json** (REST + JSON out), **toml** (config),
-  **flate2 + tar** (extract), **libc** (setsid/kill/urandom), **anyhow** (errors).
+  **flate2 + tar** (extract), **libc** (setsid/kill/urandom), **anyhow** (errors),
+  **sha2** (verify downloads; pure Rust, no C dep, so musl is unaffected).
 
 ## On-disk layout
 - `~/.config/byteferret/config.toml` — gui address, vault path, folder id (editable).

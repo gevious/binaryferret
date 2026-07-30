@@ -50,12 +50,37 @@ byteferret pair --show             # prints this machine's device ID
 byteferret pair --with <A's-device-id>
 
 # Back on machine A:
-byteferret pair --accept           # approve the request
+byteferret pair --show             # shows B's request, with its device ID
+byteferret pair <B's-device-id> --accept                        # approve the machine
+byteferret pair <B's-device-id> --accept --folder <folder-id>   # share a folder with it
 
 byteferret status                  # peers, sync state, conflicts
 ```
 
 Edit anything in `~/vault` and it syncs to your paired machines automatically.
+
+### Accepting is per machine *and* per folder
+
+Approving a machine and giving it a folder are two separate steps. `--accept`
+on its own admits the machine and shares nothing; each folder is then granted
+individually, so one peer can be given some folders and not others:
+
+```sh
+byteferret pair --show                              # lists requests and offered folders
+byteferret pair <id> --accept --folder notes --folder recipes   # grant two folders
+byteferret pair <id> --reject --folder recipes      # withdraw one, keep the rest
+byteferret pair <id> --accept --all-folders         # take up everything it offers
+```
+
+A folder a peer offers is created beside your vault, or wherever `--path` says.
+Rejecting an offer declines it; rejecting a folder you already share stops
+sharing it, leaving the folder and its files in place.
+
+Both verbs always name one peer by device ID — there is no "accept everything
+waiting". Anyone who can reach your machine can put a request in that list, so a
+bulk accept would hand them a folder alongside the machine you meant to approve.
+Peer-supplied *names* are shown but never matched, and an ambiguous device-ID
+prefix is refused rather than guessed.
 A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 + Path B / hub (`getting-started.md`) live in the docs repo.
 
@@ -65,7 +90,9 @@ A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 |---|---|
 | `byteferret start` / `stop` | Start/stop the managed Syncthing (idempotent) |
 | `byteferret init <path> [--existing]` | Create or attach a vault |
-| `byteferret pair --show \| --with <id> \| --accept` | Peer-to-peer pairing |
+| `byteferret pair --show` | This machine's device ID, peers, requests, offered folders |
+| `byteferret pair --with <id> [--folder <f>]` | Pair with a machine and share a folder |
+| `byteferret pair <id> --accept \| --reject [--folder <f> \| --all-folders]` | Approve/decline a machine, or one of its folders |
 | `byteferret status` | Agent health, peers, sync state, conflicts |
 | `byteferret doctor [--fix]` | Diagnose (and optionally repair) the setup |
 | `byteferret logs [-n N] [-f]` | Show/follow the agent log |

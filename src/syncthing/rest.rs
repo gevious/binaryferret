@@ -56,6 +56,31 @@ pub struct PendingDevice {
     pub address: String,
 }
 
+/// A folder some peer has offered to share with us that we have not accepted.
+/// Keyed by folder id; `offered_by` maps each announcing device id to what that
+/// device told us about the folder. The same folder id can be offered by several
+/// peers, which is why accepting is always scoped to one (folder, device) pair.
+#[derive(Deserialize, Default)]
+pub struct PendingFolder {
+    #[serde(rename = "offeredBy", default)]
+    pub offered_by: BTreeMap<String, OfferedFolder>,
+}
+
+/// The remote's description of an offered folder. Every field here is chosen by
+/// the *peer*, so treat `label` as untrusted text (see `output::sanitize`) and
+/// never as a filesystem path.
+#[derive(Deserialize, Default)]
+pub struct OfferedFolder {
+    #[serde(default)]
+    pub label: String,
+    #[serde(default)]
+    pub time: String,
+    #[serde(rename = "receiveEncrypted", default)]
+    pub receive_encrypted: bool,
+    #[serde(rename = "remoteEncrypted", default)]
+    pub remote_encrypted: bool,
+}
+
 /// Per-device view of how complete our shared folder is on the *remote* side.
 /// `remote_state` is Syncthing's coarse label for the peer's copy of the folder:
 /// "valid" (they share it), "notSharing" (they never added it), "paused", or
@@ -190,6 +215,32 @@ impl Client {
         self.req(
             "DELETE",
             &format!("/rest/cluster/pending/devices?device={}", urlencode(device)),
+            None,
+        )
+        .map(|_| ())
+    }
+
+    /// Folders peers have offered us but that we have not added — the per-folder
+    /// half of pairing. A folder only shows up here once its announcing device is
+    /// already a configured peer, so accepting one is always a decision about a
+    /// peer we have already let in.
+    pub fn pending_folders(&self) -> Result<BTreeMap<String, PendingFolder>> {
+        let v = self.req("GET", "/rest/cluster/pending/folders", None)?;
+        Ok(serde_json::from_value(v).unwrap_or_default())
+    }
+
+    /// Dismiss one peer's offer of a folder, without adding it. `device` scopes
+    /// the dismissal to that peer's announcement — Syncthing would otherwise drop
+    /// the offer from *every* device, silently discarding a second peer's
+    /// unrelated offer of the same folder id.
+    pub fn dismiss_pending_folder(&self, folder: &str, device: &str) -> Result<()> {
+        self.req(
+            "DELETE",
+            &format!(
+                "/rest/cluster/pending/folders?folder={}&device={}",
+                urlencode(folder),
+                urlencode(device)
+            ),
             None,
         )
         .map(|_| ())

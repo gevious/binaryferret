@@ -1,176 +1,543 @@
+//! Direct peer-to-peer pairing (Path A). No hub, no auto-accept.
+//!
+//! Pairing is two separate decisions, and this command keeps them separate:
+//!
+//!  1. **the connection** — `pair <device-id> --accept` admits a machine. On its
+//!     own that grants access to nothing.
+//!  2. **each folder** — `pair <device-id> --accept --folder <id>` shares one
+//!     folder with that machine, or takes up one it offered. Repeat the flag to
+//!     act on several folders from the same peer; `--reject --folder <id>`
+//!     declines or withdraws exactly one.
+//!
+//! Both verbs always name one peer explicitly, by device id. There is no
+//! "accept everything waiting" — on a shared network anyone can put a request in
+//! your pending list, and a bulk accept would hand them the vault alongside the
+//! machine you actually meant to approve.
+//!
+//! Typical flow:
+//!   desktop 1:  byteferret pair --show                        → prints its device ID
+//!   desktop 2:  byteferret pair --with <id-1>                  → adds + shares the vault
+//!   desktop 1:  byteferret pair <id-2> --accept                → approves the connection
+//!   desktop 1:  byteferret pair <id-2> --accept --folder <f>   → shares/takes up a folder
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+
 use anyhow::{bail, Result};
 use serde_json::json;
 
-use crate::agent::{add_peer, ensure_started, peer_status, PeerSync, ShareState};
-use crate::output::{emit, say};
+use crate::agent::{
+    add_device, create_shared_folder, peer_status, resolve_device_target, share_folder,
+    unshare_folder, Context, PeerSync, ShareState,
+};
+use crate::fsutil::{expand_path, safe_dir_name};
+use crate::output::{emit, sanitize, say};
+use crate::syncthing::rest::Client;
 
-/// Direct peer-to-peer pairing (Path A). No hub, no auto-accept:
-///   desktop 1:  byteferret pair --show               → prints its device ID + peers
-///   desktop 2:  byteferret pair --with <id-1>         → adds + shares with desktop 1
-///   desktop 1:  byteferret pair <host> --accept       → approves desktop 2's request
-///   desktop 1:  byteferret pair <host> --reject       → dismisses a request
-/// After both sides know each other and share the folder id, Syncthing syncs.
-pub fn pair(
-    show: bool,
-    with: Option<&str>,
-    accept: bool,
-    reject: bool,
-    target: Option<&str>,
-    address: Option<&str>,
-    name: Option<&str>,
-) -> Result<()> {
-    let ctx = ensure_started()?;
+/// Everything `byteferret pair` accepts, as parsed by clap.
+pub struct PairArgs<'a> {
+    pub show: bool,
+    pub with: Option<&'a str>,
+    pub accept: bool,
+    pub reject: bool,
+    /// Device id (or an unambiguous prefix) the accept/reject applies to.
+    pub target: Option<&'a str>,
+    pub address: Option<&'a str>,
+    pub name: Option<&'a str>,
+    /// Folder ids to act on; repeatable.
+    pub folders: Vec<String>,
+    /// Act on every folder the peer currently offers.
+    pub all_folders: bool,
+    /// Where to put a folder taken up from a peer's offer.
+    pub path: Option<&'a str>,
+}
+
+pub fn pair(a: PairArgs) -> Result<()> {
+    let ctx = crate::agent::ensure_started()?;
+
+    if a.show {
+        return show(&ctx);
+    }
+    if let Some(peer) = a.with {
+        return pair_with(&ctx, &a, peer);
+    }
+    if a.accept || a.reject {
+        return accept_or_reject(&ctx, &a);
+    }
+
+    bail!(
+        "usage:\n  \
+         byteferret pair --show\n  \
+         byteferret pair --with <device-id> [--folder <id>]…\n  \
+         byteferret pair <device-id> --accept [--folder <id>… | --all-folders] [--path <dir>]\n  \
+         byteferret pair <device-id> --reject [--folder <id>… | --all-folders]"
+    );
+}
+
+// --- `--show` -------------------------------------------------------------
+
+fn show(ctx: &Context) -> Result<()> {
     let client = &ctx.client;
     let folder = &ctx.config.folder_id;
+    let id = client.my_device_id()?;
+    let peers = peer_status(ctx).unwrap_or_default();
+    let pending = client.pending_devices()?;
+    let pending_folders = client.pending_folders()?;
 
-    if show {
-        let id = client.my_device_id()?;
-        let peers = peer_status(&ctx).unwrap_or_default();
-        let pending = client.pending_devices()?;
-
-        say(&format!("Device ID: {id}"));
-        say("Connected devices:");
-        if peers.is_empty() {
-            say("  (none paired yet — share the Device ID above and run `byteferret pair --with <id>` on the other machine)");
-        } else {
-            for p in &peers {
-                let conn = if p.connected { "Connected" } else { "Not Connected" };
-                say(&format!("  {}: {conn}", p.label()));
-                let folders = connected_folders(folder, p);
-                if folders.is_empty() {
-                    say("    no folders connected");
-                } else {
-                    for f in &folders {
-                        say(&format!("    {f}"));
-                    }
+    say(&format!("Device ID: {id}"));
+    say("Connected devices:");
+    if peers.is_empty() {
+        say("  (none paired yet — share the Device ID above and run `byteferret pair --with <id>` on the other machine)");
+    } else {
+        for p in &peers {
+            let conn = if p.connected { "Connected" } else { "Not Connected" };
+            say(&format!("  {}: {conn}", sanitize(&p.label())));
+            let folders = connected_folders(folder, p);
+            if folders.is_empty() {
+                say("    no folders connected");
+            } else {
+                for f in &folders {
+                    say(&format!("    {f}"));
                 }
             }
         }
+    }
 
-        // Pending requests: devices asking to pair *to* us. Printed per the
-        // spec so it's obvious a request is waiting and how to act on it.
-        if !pending.is_empty() {
-            say("");
-            for (pid, info) in &pending {
-                let host = if info.name.is_empty() { short(pid) } else { info.name.clone() };
+    // The silent stall: connected, so the list above looks healthy, but the peer
+    // never shared back, so nothing will ever transfer.
+    if peers.iter().any(PeerSync::stalled) {
+        say("");
+        say("Note: a connected peer is NOT sharing a folder back — run `byteferret doctor` for the fix.");
+    }
+
+    // Requests to pair *with us*. The full device id is printed because that is
+    // what `--accept` takes — and because the name beside it is the remote's
+    // claim about itself, not something to act on.
+    if !pending.is_empty() {
+        say("");
+        say("Waiting to pair:");
+        for (pid, info) in &pending {
+            let name = sanitize(&info.name);
+            let named = if name.is_empty() { String::new() } else { format!(" ({name})") };
+            say(&format!("  {pid}{named}"));
+            say(&format!("    accept:  byteferret pair {} --accept", short(pid)));
+            say(&format!("    reject:  byteferret pair {} --reject", short(pid)));
+        }
+    }
+
+    // Folders already-paired peers have offered us but that we have not taken up.
+    if !pending_folders.is_empty() {
+        say("");
+        say("Folders offered to you:");
+        for (fid, pf) in &pending_folders {
+            for (did, offer) in &pf.offered_by {
+                let label = sanitize(&offer.label);
+                let named = if label.is_empty() { String::new() } else { format!(" \"{label}\"") };
+                say(&format!("  {}{named} — offered by {}", sanitize(fid), short(did)));
                 say(&format!(
-                    "{host} is waiting to accept pairing. type `byteferret pair {host} --accept|reject` to accept or reject it"
+                    "    accept:  byteferret pair {} --accept --folder {}",
+                    short(did),
+                    sanitize(fid)
                 ));
             }
         }
-
-        emit(&json!({
-            "ok": true,
-            "deviceId": id,
-            "awaitingAcceptance": pending.len(),
-            "peers": peers.iter().map(|p| json!({
-                "deviceId": p.id,
-                "name": p.name,
-                "connected": p.connected,
-                "remoteState": p.remote_state,
-                "sharingVault": p.sharing(),
-                "shareState": p.share_state().tag(),
-                "foldersSynced": folders_synced(folder, p),
-            })).collect::<Vec<_>>(),
-            "pending": pending.iter().map(|(pid, info)| json!({
-                "deviceId": pid,
-                "name": info.name,
-                "address": info.address,
-            })).collect::<Vec<_>>(),
-        }));
-        return Ok(());
     }
 
-    if let Some(peer) = with {
-        add_peer(client, folder, peer, name, address)?;
-        say(&format!("Added {}… and shared the vault with it.", short(peer)));
-        // If the two machines are already connected as devices, the folder share
-        // we just did was the missing half — no `--accept` step is needed.
-        let connected = client
-            .connections()
-            .ok()
-            .and_then(|c| c.get(peer).map(|c| c.connected))
-            .unwrap_or(false);
-        say("");
-        if connected {
-            say("That peer is already connected, so the vault is now shared both ways —");
-            say("syncing will begin shortly. Confirm with `byteferret status`. (No `--accept` needed.)");
+    emit(&json!({
+        "ok": true,
+        "deviceId": id,
+        "awaitingAcceptance": pending.len(),
+        "peers": peers.iter().map(|p| json!({
+            "deviceId": p.id,
+            "name": p.name,
+            "connected": p.connected,
+            "remoteState": p.remote_state,
+            "sharingVault": p.sharing(),
+            "shareState": p.share_state().tag(),
+            "foldersSynced": folders_synced(folder, p),
+        })).collect::<Vec<_>>(),
+        "pending": pending.iter().map(|(pid, info)| json!({
+            "deviceId": pid,
+            "name": info.name,
+            "address": info.address,
+        })).collect::<Vec<_>>(),
+        "pendingFolders": pending_folders.iter().flat_map(|(fid, pf)| {
+            pf.offered_by.iter().map(move |(did, offer)| json!({
+                "folderId": fid,
+                "offeredBy": did,
+                "label": offer.label,
+                "time": offer.time,
+                "receiveEncrypted": offer.receive_encrypted,
+                "remoteEncrypted": offer.remote_encrypted,
+            }))
+        }).collect::<Vec<_>>(),
+    }));
+    Ok(())
+}
+
+// --- `--with` -------------------------------------------------------------
+
+fn pair_with(ctx: &Context, a: &PairArgs, peer: &str) -> Result<()> {
+    let client = &ctx.client;
+    // Initiating the pairing is itself the decision to share, so `--with` shares
+    // the configured vault unless the caller names other folders.
+    let folders: Vec<String> = if a.folders.is_empty() {
+        vec![ctx.config.folder_id.clone()]
+    } else {
+        a.folders.clone()
+    };
+
+    add_device(client, peer, a.name, a.address)?;
+    for fid in &folders {
+        if client.get_folder(fid)?.is_none() {
+            say(&format!("(no folder '{}' on this machine — skipped; run `byteferret init` first)", sanitize(fid)));
+            continue;
+        }
+        share_folder(client, fid, peer)?;
+    }
+    say(&format!(
+        "Added {}… and shared {} with it.",
+        short(peer),
+        join_folders(&folders)
+    ));
+
+    let connected = client
+        .connections()
+        .ok()
+        .and_then(|c| c.get(peer).map(|c| c.connected))
+        .unwrap_or(false);
+    say("");
+    if connected {
+        say("That peer is already connected, so the vault is now shared both ways —");
+        say("syncing will begin shortly. Confirm with `byteferret status`. (No `--accept` needed.)");
+    } else {
+        say("Not connected to that peer yet. If they already know each other, they'll");
+        say("link up and sync on their own once both are online — nothing more to do.");
+        say("If they don't connect within a minute, the other machine may still need to");
+        say("accept this device. Check there with `byteferret pair --show`.");
+    }
+    emit(&json!({
+        "ok": true, "action": "with", "peerId": peer,
+        "folders": folders, "alreadyConnected": connected,
+    }));
+    Ok(())
+}
+
+// --- `--accept` / `--reject` ---------------------------------------------
+
+fn accept_or_reject(ctx: &Context, a: &PairArgs) -> Result<()> {
+    if a.accept && a.reject {
+        bail!("--accept and --reject cannot be used together.");
+    }
+    let client = &ctx.client;
+    let accepting = a.accept;
+    let action = if accepting { "accept" } else { "reject" };
+
+    let Some(target) = a.target else {
+        bail!(
+            "`--{action}` needs the device id of the peer to {action} — run `byteferret pair --show` \
+             to list them.\nThere is deliberately no way to {action} every waiting request at once: \
+             anyone on your network can add themselves to that list."
+        );
+    };
+
+    let pending_devices = client.pending_devices()?;
+    let pending_folders = client.pending_folders()?;
+    let my_id = client.my_device_id()?;
+
+    // Candidates are the peers we could plausibly mean: those waiting to pair,
+    // plus those already configured (whose folders we may still be deciding on).
+    let mut candidates: BTreeMap<String, String> = BTreeMap::new();
+    for (id, info) in &pending_devices {
+        candidates.insert(id.clone(), info.name.clone());
+    }
+    for d in client.get_devices()? {
+        let Some(id) = d.get("deviceID").and_then(|v| v.as_str()) else { continue };
+        if id == my_id {
+            continue;
+        }
+        let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+        candidates.entry(id.to_string()).or_insert(name);
+    }
+    if candidates.is_empty() {
+        bail!(
+            "no peers are known or waiting. The other machine must run \
+             `byteferret pair --with <this-device-id>` first — get this device's id with \
+             `byteferret pair --show`."
+        );
+    }
+
+    let cand_list: Vec<(String, String)> = candidates.into_iter().collect();
+    let device_id = resolve_device_target(target, &cand_list)?;
+    let is_pending_device = pending_devices.contains_key(&device_id);
+
+    // Which folders this peer is offering us right now.
+    let offered: BTreeMap<String, String> = pending_folders
+        .iter()
+        .filter_map(|(fid, pf)| pf.offered_by.get(&device_id).map(|o| (fid.clone(), o.label.clone())))
+        .collect();
+
+    let folder_scope = a.all_folders || !a.folders.is_empty();
+    if !folder_scope {
+        return device_only(ctx, &device_id, accepting, is_pending_device, &offered, a);
+    }
+
+    let wanted: Vec<String> = if a.all_folders {
+        let mut w: Vec<String> = offered.keys().cloned().collect();
+        if !accepting {
+            // Rejecting "all folders" also covers folders we currently share
+            // with this peer — withdrawing access, not just declining offers.
+            for f in shared_with(&ctx.client, &device_id)? {
+                if !w.contains(&f) {
+                    w.push(f);
+                }
+            }
+        }
+        if w.is_empty() {
+            if accepting {
+                bail!("{} is not offering any folders.", short(&device_id));
+            }
+            bail!(
+                "{} is not offering any folders, and none are shared with it.",
+                short(&device_id)
+            );
+        }
+        w
+    } else {
+        a.folders.clone()
+    };
+
+    if accepting && a.path.is_some() && wanted.len() > 1 {
+        bail!("--path applies to a single folder — name one --folder at a time when using it.");
+    }
+
+    let mut affected = Vec::new();
+    for fid in &wanted {
+        let outcome = if accepting {
+            accept_folder(ctx, &device_id, fid, &offered, a, is_pending_device)?
         } else {
-            // Not connected *right now* does not prove an accept is pending —
-            // the machines may already know each other and simply be offline.
-            // So point the user at `--show`, which reports the real state,
-            // instead of asserting an accept step that may not be needed.
-            say("Not connected to that peer yet. If they already know each other, they'll");
-            say("link up and sync on their own once both are online — nothing more to do.");
-            say("If they don't connect within a minute, the other machine may still need to");
-            say("accept this device. Check there with `byteferret pair --show`.");
-        }
-        emit(&json!({ "ok": true, "action": "with", "peerId": peer, "alreadyConnected": connected }));
-        return Ok(());
-    }
-
-    if accept || reject {
-        if accept && reject {
-            bail!("--accept and --reject cannot be used together.");
-        }
-        let action = if reject { "reject" } else { "accept" };
-        let pending = client.pending_devices()?;
-
-        // Resolve the target (a hostname or a device id / id-prefix) to the
-        // matching pending device id(s). With no target, act on all pending.
-        let matched: Vec<String> = match target {
-            Some(t) => pending
-                .iter()
-                .filter(|(pid, info)| info.name == t || pid.as_str() == t || pid.starts_with(t))
-                .map(|(pid, _)| pid.clone())
-                .collect(),
-            None => pending.keys().cloned().collect(),
+            reject_folder(ctx, &device_id, fid, &offered)?
         };
+        say(&format!("  {outcome}"));
+        affected.push(fid.clone());
+    }
 
-        if matched.is_empty() {
-            match target {
-                Some(t) => say(&format!("No pairing request from '{t}' is waiting.")),
-                None => say("No pairing requests are waiting."),
-            }
-            // Distinguish "nothing has arrived yet" from "already paired" — the
-            // latter is the confusing dead end where sync can still be broken
-            // because a peer never shared the vault back.
-            let peers = peer_status(&ctx).unwrap_or_default();
-            if peers.is_empty() {
-                say("(The other machine must run `byteferret pair --with <this-device-id>` first —");
-                say(" get this device's id with `byteferret pair --show`.)");
-            } else if peers.iter().any(|p| p.stalled()) {
-                say("Note: a connected peer is NOT sharing the vault back — run `byteferret doctor` for the fix.");
-            }
-            emit(&json!({ "ok": true, "action": action, "affected": [] }));
-            return Ok(());
-        }
+    emit(&json!({
+        "ok": true, "action": action, "peerId": device_id, "folders": affected,
+    }));
+    Ok(())
+}
 
-        let mut affected = Vec::new();
-        for pid in &matched {
-            let peer_name = pending.get(pid).map(|p| p.name.as_str()).filter(|s| !s.is_empty());
-            let label = peer_name.map(str::to_string).unwrap_or_else(|| short(pid));
-            if reject {
-                client.dismiss_pending_device(pid)?;
-                say(&format!("Rejected {label} ({}…).", short(pid)));
-            } else {
-                add_peer(client, folder, pid, peer_name, address)?;
-                say(&format!("Accepted {label} ({}…) and shared the vault.", short(pid)));
-            }
-            affected.push(pid.clone());
+/// `--accept` / `--reject` with no folder named: the *connection* decision.
+fn device_only(
+    ctx: &Context,
+    device_id: &str,
+    accepting: bool,
+    is_pending_device: bool,
+    offered: &BTreeMap<String, String>,
+    a: &PairArgs,
+) -> Result<()> {
+    let client = &ctx.client;
+
+    if !accepting {
+        if !is_pending_device {
+            bail!(
+                "{} is already a configured peer, so there is no pairing request to reject.\n\
+                 To stop sharing a folder with it: byteferret pair {} --reject --folder <id>",
+                short(device_id),
+                short(device_id)
+            );
         }
-        emit(&json!({ "ok": true, "action": action, "affected": affected }));
+        client.dismiss_pending_device(device_id)?;
+        say(&format!("Rejected the pairing request from {device_id}."));
+        emit(&json!({ "ok": true, "action": "reject", "peerId": device_id, "folders": [] }));
         return Ok(());
     }
 
-    bail!("usage: byteferret pair (--show | --with <device-id> | [<hostname-or-id>] --accept | [<hostname-or-id>] --reject) [--address <addr>] [--name <name>]");
+    if is_pending_device {
+        add_device(client, device_id, a.name, a.address)?;
+        say(&format!("Accepted the connection from {device_id}."));
+    } else {
+        say(&format!("{} is already a configured peer.", short(device_id)));
+    }
+
+    // Deliberately no folder is shared here — admitting a machine and giving it
+    // documents are separate decisions, so spell out how to make the second one.
+    let shared = shared_with(client, device_id)?;
+    say("");
+    if !shared.is_empty() {
+        say(&format!("Already shared with it: {}.", join_folders(&shared)));
+    }
+    if !offered.is_empty() {
+        say("It is offering these folders — accept the ones you want:");
+        for (fid, label) in offered {
+            let label = sanitize(label);
+            let named = if label.is_empty() { String::new() } else { format!(" \"{label}\"") };
+            say(&format!("  {}{named}", sanitize(fid)));
+            say(&format!(
+                "    byteferret pair {} --accept --folder {}",
+                short(device_id),
+                sanitize(fid)
+            ));
+        }
+    }
+    if shared.is_empty() && offered.is_empty() {
+        say("No folders are shared with it yet, and it isn't offering any. To share one of yours:");
+        say(&format!(
+            "  byteferret pair {} --accept --folder {}",
+            short(device_id),
+            ctx.config.folder_id
+        ));
+    }
+    emit(&json!({
+        "ok": true, "action": "accept", "peerId": device_id, "folders": [],
+        "offeredFolders": offered.keys().collect::<Vec<_>>(),
+        "sharedFolders": shared,
+    }));
+    Ok(())
+}
+
+/// Accept one folder from one peer: share ours back, or take up their offer.
+fn accept_folder(
+    ctx: &Context,
+    device_id: &str,
+    folder_id: &str,
+    offered: &BTreeMap<String, String>,
+    a: &PairArgs,
+    is_pending_device: bool,
+) -> Result<String> {
+    let client = &ctx.client;
+    // Sharing implies the connection, so admit the peer first if it was waiting.
+    if is_pending_device {
+        add_device(client, device_id, a.name, a.address)?;
+    }
+
+    if client.get_folder(folder_id)?.is_some() {
+        let changed = share_folder(client, folder_id, device_id)?;
+        return Ok(if changed {
+            format!("shared '{}' with {}", sanitize(folder_id), short(device_id))
+        } else {
+            format!("'{}' was already shared with {}", sanitize(folder_id), short(device_id))
+        });
+    }
+
+    let Some(label) = offered.get(folder_id) else {
+        bail!(
+            "{} is not offering a folder '{}', and you don't have one by that id.\n\
+             Run `byteferret pair --show` to see what it offers.",
+            short(device_id),
+            sanitize(folder_id)
+        );
+    };
+
+    let dir = match a.path {
+        Some(p) => expand_path(p),
+        None => default_folder_path(ctx, folder_id, label)?,
+    };
+    create_shared_folder(client, folder_id, label, &dir.to_string_lossy(), device_id)?;
+    Ok(format!(
+        "accepted '{}' from {} → {}",
+        sanitize(folder_id),
+        short(device_id),
+        dir.display()
+    ))
+}
+
+/// Reject one folder from one peer: decline the offer, or withdraw access.
+fn reject_folder(
+    ctx: &Context,
+    device_id: &str,
+    folder_id: &str,
+    offered: &BTreeMap<String, String>,
+) -> Result<String> {
+    let client = &ctx.client;
+    if offered.contains_key(folder_id) {
+        client.dismiss_pending_folder(folder_id, device_id)?;
+        return Ok(format!(
+            "declined '{}' from {}",
+            sanitize(folder_id),
+            short(device_id)
+        ));
+    }
+    if unshare_folder(client, folder_id, device_id)? {
+        return Ok(format!(
+            "stopped sharing '{}' with {} (the folder and its files stay here)",
+            sanitize(folder_id),
+            short(device_id)
+        ));
+    }
+    Ok(format!(
+        "nothing to do for '{}' — {} neither offers it nor has access to it",
+        sanitize(folder_id),
+        short(device_id)
+    ))
+}
+
+/// Where a folder taken up from a peer should live when `--path` is not given:
+/// beside the existing vault, under a name derived from the peer's label.
+///
+/// Refuses rather than guesses in the two cases where guessing could do damage —
+/// no vault to anchor to, or a directory already sitting at that name (which a
+/// send-receive folder would start merging into).
+fn default_folder_path(ctx: &Context, folder_id: &str, label: &str) -> Result<PathBuf> {
+    let Some(vault) = &ctx.config.vault_path else {
+        bail!(
+            "no vault is configured, so there is nowhere obvious to put '{}' — \
+             pass --path <dir> to choose.",
+            sanitize(folder_id)
+        );
+    };
+    let base = Path::new(vault).parent().unwrap_or(Path::new(vault)).to_path_buf();
+
+    // The label and the id both come from the peer, so neither is used as a path
+    // until it has been reduced to a single safe component.
+    let Some(name) = safe_dir_name(label).or_else(|| safe_dir_name(folder_id)) else {
+        bail!(
+            "the folder's name from the peer has no usable characters — \
+             pass --path <dir> to choose where it goes."
+        );
+    };
+    let dir = base.join(&name);
+
+    let occupied = dir.read_dir().map(|mut e| e.next().is_some()).unwrap_or(false);
+    if occupied {
+        bail!(
+            "{} already exists and is not empty — pass --path <dir> to choose where '{}' goes, \
+             or point it there deliberately.",
+            dir.display(),
+            sanitize(folder_id)
+        );
+    }
+    Ok(dir)
+}
+
+/// Folder ids currently shared with `device_id`.
+fn shared_with(client: &Client, device_id: &str) -> Result<Vec<String>> {
+    Ok(client
+        .get_folders()?
+        .into_iter()
+        .filter(|f| {
+            f.get("devices")
+                .and_then(|d| d.as_array())
+                .map(|a| a.iter().any(|d| d.get("deviceID").and_then(|v| v.as_str()) == Some(device_id)))
+                .unwrap_or(false)
+        })
+        .filter_map(|f| f.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect())
+}
+
+fn join_folders(folders: &[String]) -> String {
+    match folders {
+        [] => "no folders".to_string(),
+        [one] => format!("'{}'", sanitize(one)),
+        many => many.iter().map(|f| format!("'{}'", sanitize(f))).collect::<Vec<_>>().join(", "),
+    }
 }
 
 /// The folders currently connected with a peer, each annotated with its share
 /// state (e.g. `byteferret-vault (establishing)`). Empty when the peer is
 /// offline — nothing is connected — which the caller renders as "no folders
-/// connected". byteferret manages a single vault folder, so the list holds at
-/// most one entry today, but the shape is a list so multi-folder is a no-op.
+/// connected".
 fn connected_folders(folder: &str, p: &PeerSync) -> Vec<String> {
     if !p.connected {
         return vec![];
@@ -187,12 +554,11 @@ fn connected_folders(folder: &str, p: &PeerSync) -> Vec<String> {
         ShareState::NotSharingBack => " (peer not sharing back)".to_string(),
         ShareState::Offline => String::new(), // unreachable: gated by `p.connected` above
     };
-    vec![format!("{folder}{annotation}")]
+    vec![format!("{}{annotation}", sanitize(folder))]
 }
 
 /// Machine-readable form of the same list for `--json`: the folder id plus its
-/// state, so consumers don't have to parse the annotated string. Empty when the
-/// peer is offline, matching the human "no folders connected".
+/// state, so consumers don't have to parse the annotated string.
 fn folders_synced(folder: &str, p: &PeerSync) -> serde_json::Value {
     if !p.connected {
         return json!([]);
@@ -202,4 +568,21 @@ fn folders_synced(folder: &str, p: &PeerSync) -> serde_json::Value {
 
 fn short(id: &str) -> String {
     id.chars().take(7).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::join_folders;
+
+    #[test]
+    fn folder_lists_read_naturally() {
+        assert_eq!(join_folders(&["a".into()]), "'a'");
+        assert_eq!(join_folders(&["a".into(), "b".into()]), "'a', 'b'");
+    }
+
+    #[test]
+    fn folder_ids_from_a_peer_cannot_inject_escapes_into_the_summary() {
+        let out = join_folders(&["ev\u{1b}[2Kil".to_string()]);
+        assert!(!out.contains('\u{1b}'));
+    }
 }

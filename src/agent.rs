@@ -2,11 +2,12 @@
 //! agent's persisted state (config + secrets), the managed Syncthing process,
 //! and the REST client — so commands express intent, not plumbing.
 
-use anyhow::Result;
+// `Context` is imported anonymously: the trait's `.with_context()` is what we
+// want, and the name itself belongs to this module's own `Context` struct.
+use anyhow::{anyhow, bail, Context as _, Result};
 use serde_json::{json, Value};
 
 use crate::config::{Config, Secrets};
-use crate::output::say;
 use crate::paths::Paths;
 use crate::syncthing::process;
 use crate::syncthing::rest::Client;
@@ -76,12 +77,12 @@ fn apply_runtime_toggles(client: &Client) -> Result<()> {
     Ok(())
 }
 
-/// Adds a peer device and shares the vault folder with it — the shared core of
-/// `pair --with` and `pair --accept`. Idempotent: re-adding an existing peer or
-/// re-sharing an existing folder membership makes no change.
-pub fn add_peer(
+/// Adds (or updates) a peer device — the *connection* half of pairing, with no
+/// folder consequences. Sharing a folder is a separate, explicit decision, so
+/// that approving a machine and granting it a document folder are never the same
+/// keystroke. Idempotent.
+pub fn add_device(
     client: &Client,
-    folder_id: &str,
     device_id: &str,
     name: Option<&str>,
     address: Option<&str>,
@@ -107,7 +108,8 @@ pub fn add_peer(
             .unwrap_or_else(|| vec!["dynamic".to_string()]),
     };
 
-    // FR-7: never auto-accept unknown folders; never act as introducer.
+    // FR-7: never auto-accept unknown folders; never act as introducer. Both
+    // would let a peer widen its own access after we approved the connection.
     let device = json!({
         "deviceID": device_id,
         "name": name,
@@ -116,24 +118,132 @@ pub fn add_peer(
         "introducer": false,
     });
     client.put_device(&device)?;
+    Ok(())
+}
 
-    match client.get_folder(folder_id)? {
-        None => say(&format!("(no vault folder '{folder_id}' yet — run `byteferret init` first; peer added regardless)")),
-        Some(mut folder) => {
-            let already = folder
-                .get("devices")
-                .and_then(Value::as_array)
-                .map(|a| a.iter().any(|d| d.get("deviceID").and_then(Value::as_str) == Some(device_id)))
-                .unwrap_or(false);
-            if !already {
-                if let Some(arr) = folder.get_mut("devices").and_then(Value::as_array_mut) {
-                    arr.push(json!({ "deviceID": device_id }));
-                    client.put_folder(&folder)?;
-                }
-            }
+/// Shares a folder we already have with a peer. Returns false when the peer was
+/// already a member (nothing to do). Errors if the folder isn't configured here.
+pub fn share_folder(client: &Client, folder_id: &str, device_id: &str) -> Result<bool> {
+    let mut folder = client
+        .get_folder(folder_id)?
+        .ok_or_else(|| anyhow!("no folder '{folder_id}' is configured on this machine"))?;
+    let already = folder
+        .get("devices")
+        .and_then(Value::as_array)
+        .map(|a| a.iter().any(|d| d.get("deviceID").and_then(Value::as_str) == Some(device_id)))
+        .unwrap_or(false);
+    if already {
+        return Ok(false);
+    }
+    let Some(arr) = folder.get_mut("devices").and_then(Value::as_array_mut) else {
+        bail!("folder '{folder_id}' has no device list to extend");
+    };
+    arr.push(json!({ "deviceID": device_id }));
+    client.put_folder(&folder)?;
+    Ok(true)
+}
+
+/// Stops sharing a folder with a peer, leaving both the folder and the peer in
+/// place. This is what withdrawing one folder from one machine looks like.
+/// Returns false when the peer was not a member.
+pub fn unshare_folder(client: &Client, folder_id: &str, device_id: &str) -> Result<bool> {
+    let Some(mut folder) = client.get_folder(folder_id)? else {
+        return Ok(false);
+    };
+    let Some(arr) = folder.get_mut("devices").and_then(Value::as_array_mut) else {
+        return Ok(false);
+    };
+    let before = arr.len();
+    arr.retain(|d| d.get("deviceID").and_then(Value::as_str) != Some(device_id));
+    if arr.len() == before {
+        return Ok(false);
+    }
+    client.put_folder(&folder)?;
+    Ok(true)
+}
+
+/// Creates a folder a peer offered us, at `path`, shared with that peer.
+/// `label` is only ever used as display text — the caller decides the path.
+pub fn create_shared_folder(
+    client: &Client,
+    folder_id: &str,
+    label: &str,
+    path: &str,
+    device_id: &str,
+) -> Result<()> {
+    std::fs::create_dir_all(path).with_context(|| format!("creating {path}"))?;
+    let folder = vault_folder_config(folder_id, label, path, &[device_id.to_string()]);
+    client.put_folder(&folder)
+}
+
+/// Syncthing device ids are uppercase base32 whose dashes are only visual
+/// grouping, so neither case nor dashes are significant when comparing.
+fn normalize_id(s: &str) -> String {
+    s.chars().filter(|c| *c != '-').flat_map(char::to_uppercase).collect()
+}
+
+/// Shortest device-id prefix we will act on: one full Syncthing group, which is
+/// what `pair --show` prints and still 35 bits of the peer's certificate hash.
+const MIN_TARGET_LEN: usize = 7;
+
+/// Resolve a user-typed pairing target to exactly one device id.
+///
+/// Matching is on the **device id only**. Every peer also carries a `name`, but
+/// that name is chosen by the remote machine: allowing it to match would let a
+/// stranger call itself `laptop` and be approved by a user who meant their own
+/// laptop. The device id is the one identifier a peer cannot forge — it is a
+/// hash of its TLS certificate.
+///
+/// An ambiguous prefix is an error rather than a guess, and never expands to
+/// "all of them": accepting is what grants access, so it acts on exactly one
+/// peer, named deliberately.
+pub fn resolve_device_target(target: &str, candidates: &[(String, String)]) -> Result<String> {
+    let norm = normalize_id(target);
+    if norm.len() < MIN_TARGET_LEN {
+        bail!(
+            "'{target}' is too short to identify a device — use at least {MIN_TARGET_LEN} \
+             characters of its device id (see `byteferret pair --show`)"
+        );
+    }
+
+    let matches: Vec<&(String, String)> = candidates
+        .iter()
+        .filter(|(id, _)| normalize_id(id).starts_with(&norm))
+        .collect();
+
+    match matches.as_slice() {
+        [(id, _)] => Ok(id.clone()),
+        [] => bail!(
+            "no device id starts with '{target}'.{}",
+            list_candidates("Known devices", candidates)
+        ),
+        many => bail!(
+            "'{target}' matches {} devices — use more of the device id.{}",
+            many.len(),
+            list_candidates(
+                "Matches",
+                &many.iter().map(|(a, b)| (a.clone(), b.clone())).collect::<Vec<_>>()
+            )
+        ),
+    }
+}
+
+/// Render candidates for an error message. Names come from the peer, so they are
+/// sanitized and shown only as a hint — the id is what the user must type.
+fn list_candidates(heading: &str, candidates: &[(String, String)]) -> String {
+    if candidates.is_empty() {
+        return String::new();
+    }
+    let mut s = format!("\n{heading}:");
+    for (id, name) in candidates {
+        let name = crate::output::sanitize(name);
+        if name.is_empty() {
+            s.push_str(&format!("\n  {id}"));
+        } else {
+            s.push_str(&format!("\n  {id}  ({name})"));
         }
     }
-    Ok(())
+    s
 }
 
 /// A peer's connectivity plus whether it is actually sharing the vault back.
@@ -262,6 +372,62 @@ pub fn vault_folder_config(id: &str, label: &str, path: &str, peers: &[String]) 
         "devices": devices,
         "versioning": { "type": "" }, // v1: minimal on desktop; the hub is canonical history
     })
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::resolve_device_target;
+
+    const A: &str = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+    const B: &str = "AAAAAAA-ZZZZZZZ-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+    const C: &str = "QQQQQQQ-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+
+    fn cands() -> Vec<(String, String)> {
+        vec![
+            (A.to_string(), "my-laptop".to_string()),
+            (B.to_string(), "my-laptop".to_string()), // same name on purpose
+            (C.to_string(), "desktop".to_string()),
+        ]
+    }
+
+    #[test]
+    fn resolves_a_full_id_and_an_unambiguous_prefix() {
+        assert_eq!(resolve_device_target(C, &cands()).unwrap(), C);
+        assert_eq!(resolve_device_target("QQQQQQQ", &cands()).unwrap(), C);
+        // dashes and case are cosmetic
+        assert_eq!(resolve_device_target("qqqqqqq", &cands()).unwrap(), C);
+        assert_eq!(resolve_device_target("QQQQQQQBBBBBBB", &cands()).unwrap(), C);
+    }
+
+    #[test]
+    fn a_peer_chosen_name_never_matches() {
+        // Two peers claim the name "my-laptop"; a name must not select either,
+        // or a stranger could impersonate the machine the user meant.
+        let err = resolve_device_target("my-laptop", &cands()).unwrap_err().to_string();
+        assert!(err.contains("too short") || err.contains("no device id"), "{err}");
+        assert!(resolve_device_target("desktop", &cands()).is_err());
+    }
+
+    #[test]
+    fn ambiguous_prefixes_are_refused_not_guessed() {
+        // Both A and B start with AAAAAAA — acting on either would be a coin flip.
+        let err = resolve_device_target("AAAAAAA", &cands()).unwrap_err().to_string();
+        assert!(err.contains("matches 2 devices"), "{err}");
+        // Extending the prefix past the shared part disambiguates.
+        assert_eq!(resolve_device_target("AAAAAAAZ", &cands()).unwrap(), B);
+    }
+
+    #[test]
+    fn short_targets_are_refused() {
+        assert!(resolve_device_target("A", &cands()).is_err());
+        assert!(resolve_device_target("AAAAAA", &cands()).is_err()); // 6 chars
+        assert!(resolve_device_target("", &cands()).is_err());
+    }
+
+    #[test]
+    fn unknown_target_errors_rather_than_matching_nothing_silently() {
+        assert!(resolve_device_target("ZZZZZZZZ", &cands()).is_err());
+    }
 }
 
 #[cfg(test)]

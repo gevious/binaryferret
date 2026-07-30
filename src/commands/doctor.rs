@@ -17,7 +17,7 @@ use serde_json::json;
 use crate::agent::{ensure_started, load_context};
 use crate::config::Secrets;
 use crate::fsutil::find_files;
-use crate::output::{emit, say};
+use crate::output::{emit, sanitize, say};
 use crate::paths::{Paths, SYNCTHING_VERSION};
 use crate::syncthing::process;
 
@@ -276,8 +276,10 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
             };
             let stalled = by(ShareState::NotSharingBack);
             let establishing = by(ShareState::Establishing);
+            // Peer labels are the remote's own claim about itself, so they are
+            // sanitized before reaching the terminal.
             let names = |ps: &[&crate::agent::PeerSync]| {
-                ps.iter().map(|p| p.label()).collect::<Vec<_>>().join(", ")
+                ps.iter().map(|p| sanitize(&p.label())).collect::<Vec<_>>().join(", ")
             };
             if !stalled.is_empty() {
                 checks.push(

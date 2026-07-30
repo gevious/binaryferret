@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::agent::load_context;
 use crate::fsutil::find_files;
-use crate::output::{emit, say};
+use crate::output::{emit, sanitize, say};
 use crate::syncthing::process;
 
 /// Reports agent + Syncthing health, the vault, connected peers, sync state,
@@ -83,10 +83,10 @@ pub fn status() -> Result<()> {
             let did = p["deviceId"].as_str().unwrap_or("");
             let connected = p["connected"].as_bool().unwrap_or(false);
             let addr = p["address"].as_str().unwrap_or("");
-            let addr = if addr.is_empty() { String::new() } else { format!("  {addr}") };
+            let addr = if addr.is_empty() { String::new() } else { format!("  {}", sanitize(addr)) };
             say(&format!(
                 "  - {} ({}…): {}{addr}",
-                p["name"].as_str().unwrap_or(""),
+                sanitize(p["name"].as_str().unwrap_or("")),
                 &did.chars().take(7).collect::<String>(),
                 if connected { "connected" } else { "disconnected" },
             ));
@@ -95,14 +95,16 @@ pub fn status() -> Result<()> {
     if !pending_ids.is_empty() {
         say(&format!("pending:    {} device request(s) — run `byteferret pair --accept`", pending_ids.len()));
         for id in &pending_ids {
-            let nm = pending.get(id).map(|p| p.name.as_str()).unwrap_or("");
+            let nm = sanitize(pending.get(id).map(|p| p.name.as_str()).unwrap_or(""));
             say(&format!("  - {nm} ({}…)", id.chars().take(7).collect::<String>()));
         }
     }
     if !conflicts.is_empty() {
         say(&format!("conflicts:  {} sync-conflict file(s) — open both copies, merge, delete the conflict copy:", conflicts.len()));
+        // Conflict *filenames* also arrive from a peer — they are whatever the
+        // other machine named its copy — so they get the same treatment.
         for f in &conflicts {
-            say(&format!("  - {f}"));
+            say(&format!("  - {}", sanitize(f)));
         }
     }
 

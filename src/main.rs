@@ -5,6 +5,7 @@
 mod agent;
 mod commands;
 mod config;
+mod fetch;
 mod fsutil;
 mod output;
 mod paths;
@@ -46,23 +47,32 @@ enum Cmd {
         /// Print this device's ID (to give to another machine)
         #[arg(long)]
         show: bool,
-        /// Pair with a machine by its device ID and share the vault
+        /// Pair with a machine by its device ID and share a folder with it
         #[arg(long, value_name = "DEVICE-ID")]
         with: Option<String>,
-        /// Approve pending pairing request(s)
+        /// Approve the named peer's connection, or a folder of theirs with --folder
         #[arg(long)]
         accept: bool,
-        /// Reject (dismiss) pending pairing request(s)
+        /// Decline the named peer's request, or one folder with --folder
         #[arg(long)]
         reject: bool,
+        /// Folder id to accept/reject/share; repeat for several
+        #[arg(long, value_name = "FOLDER-ID")]
+        folder: Vec<String>,
+        /// Act on every folder the peer currently offers
+        #[arg(long)]
+        all_folders: bool,
+        /// Where to put a folder taken up from a peer (defaults to beside the vault)
+        #[arg(long, value_name = "DIR")]
+        path: Option<String>,
         /// Explicit peer sync address, e.g. tcp://host:22000 (manual/overlay pairing)
         #[arg(long)]
         address: Option<String>,
         /// Friendly name to record for the peer
         #[arg(long)]
         name: Option<String>,
-        /// Target for --accept/--reject: a hostname or device id; omit to act on all pending
-        #[arg(value_name = "HOSTNAME-OR-ID")]
+        /// Device id (or an unambiguous prefix) that --accept/--reject applies to
+        #[arg(value_name = "DEVICE-ID")]
         id: Option<String>,
     },
     /// Show agent, peers, sync state, conflicts
@@ -135,18 +145,24 @@ fn main() {
             with,
             accept,
             reject,
+            folder,
+            all_folders,
+            path,
             address,
             name,
             id,
-        } => commands::pair::pair(
-            *show,
-            with.as_deref(),
-            *accept,
-            *reject,
-            id.as_deref(),
-            address.as_deref(),
-            name.as_deref(),
-        ),
+        } => commands::pair::pair(commands::pair::PairArgs {
+            show: *show,
+            with: with.as_deref(),
+            accept: *accept,
+            reject: *reject,
+            target: id.as_deref(),
+            address: address.as_deref(),
+            name: name.as_deref(),
+            folders: folder.clone(),
+            all_folders: *all_folders,
+            path: path.as_deref(),
+        }),
         Cmd::Status => commands::status::status(),
         Cmd::Version => commands::version::version(),
         Cmd::Doctor { fix } => commands::doctor::doctor(*fix),
