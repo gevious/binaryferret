@@ -5,9 +5,9 @@ use crate::agent::{add_peer, ensure_started};
 use crate::output::{emit, say};
 
 /// Direct peer-to-peer pairing (Path A). No hub, no auto-accept:
-///   desktop 1:  binaryferret pair --show          → prints its device ID
-///   desktop 2:  binaryferret pair --with <id-1>    → adds + shares with desktop 1
-///   desktop 1:  binaryferret pair --accept         → approves desktop 2's request
+///   desktop 1:  byteferret pair --show          → prints its device ID
+///   desktop 2:  byteferret pair --with <id-1>    → adds + shares with desktop 1
+///   desktop 1:  byteferret pair --accept         → approves desktop 2's request
 /// After both sides know each other and share the folder id, Syncthing syncs.
 pub fn pair(
     show: bool,
@@ -24,7 +24,7 @@ pub fn pair(
     if show {
         let id = client.my_device_id()?;
         say("This device's ID (share it with another machine, then run there:");
-        say(&format!("  binaryferret pair --with {id}"));
+        say(&format!("  byteferret pair --with {id}"));
         say(")");
         say("");
         say(&id);
@@ -35,7 +35,7 @@ pub fn pair(
     if let Some(peer) = with {
         add_peer(client, folder, peer, name, address)?;
         say(&format!("Added peer {}… and shared the vault with it.", short(peer)));
-        say("On that machine, run `binaryferret pair --accept` to approve this device.");
+        say("On that machine, run `byteferret pair --accept` to approve this device.");
         emit(&json!({ "ok": true, "action": "with", "peerId": peer }));
         return Ok(());
     }
@@ -52,7 +52,7 @@ pub fn pair(
                 None => "No pending device requests.".to_string(),
             }
             .as_str());
-            say("(The other machine must run `binaryferret pair --with <this-device-id>` first.)");
+            say("(The other machine must run `byteferret pair --with <this-device-id>` first.)");
             emit(&json!({ "ok": true, "action": "accept", "accepted": [] }));
             return Ok(());
         }
@@ -65,7 +65,7 @@ pub fn pair(
         return Ok(());
     }
 
-    bail!("usage: binaryferret pair (--show | --with <device-id> | --accept [<device-id>]) [--address <addr>] [--name <name>]");
+    bail!("usage: byteferret pair (--show | --with <device-id> | --accept [<device-id>]) [--address <addr>] [--name <name>]");
 }
 
 fn short(id: &str) -> String {

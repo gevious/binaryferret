@@ -9,7 +9,7 @@ use crate::fsutil::expand_path;
 use crate::output::{emit, say};
 
 const STIGNORE: &str = "\
-// BinaryFerret-managed ignore list
+// ByteFerret-managed ignore list
 .stversions
 .stfolder
 *~
@@ -32,7 +32,7 @@ fn write_if_absent(path: &Path, content: &str) -> Result<()> {
 fn scaffold(root: &Path) -> Result<()> {
     write_if_absent(
         &root.join("README.md"),
-        "# My BinaryFerret Vault\n\nEdit any doc in neovim; it syncs to your other machines automatically.\nCross-reference docs anywhere with `[[wiki-links]]`.\n",
+        "# My ByteFerret Vault\n\nEdit any doc in neovim; it syncs to your other machines automatically.\nCross-reference docs anywhere with `[[wiki-links]]`.\n",
     )?;
     Ok(())
 }
@@ -63,7 +63,7 @@ pub fn init(target: &str, existing: bool) -> Result<()> {
         .and_then(Value::as_array)
         .map(|a| a.iter().filter_map(|d| d.get("deviceID").and_then(Value::as_str).map(str::to_string)).collect())
         .unwrap_or_default();
-    let folder = vault_folder_config(&ctx.config.folder_id, "BinaryFerret Vault", &path_str, &peers);
+    let folder = vault_folder_config(&ctx.config.folder_id, "ByteFerret Vault", &path_str, &peers);
     ctx.client.put_folder(&folder)?;
 
     let mut config = ctx.config.clone();
@@ -74,8 +74,8 @@ pub fn init(target: &str, existing: bool) -> Result<()> {
     say(&format!("  folder id: {}", config.folder_id));
     say(if existing { "  attached existing folder (no files changed)" } else { "  scaffolded starter structure" });
     say("");
-    say("Next: pair another machine with `binaryferret pair --show` here, then");
-    say("`binaryferret pair --with <id>` on the other machine.");
+    say("Next: pair another machine with `byteferret pair --show` here, then");
+    say("`byteferret pair --with <id>` on the other machine.");
     emit(&json!({ "ok": true, "vaultPath": path_str, "folderId": config.folder_id, "scaffolded": !existing }));
     Ok(())
 }

@@ -1,5 +1,5 @@
-//! `binaryferret logs` — show the managed Syncthing's log (FR-26). The agent's
-//! only log today is `~/.local/share/binaryferret/syncthing.log` (stdout+stderr of
+//! `byteferret logs` — show the managed Syncthing's log (FR-26). The agent's
+//! only log today is `~/.local/share/byteferret/syncthing.log` (stdout+stderr of
 //! the detached Syncthing process); this command tails it without the user
 //! needing to know that path.
 
@@ -37,7 +37,7 @@ pub fn logs(lines: usize, follow: bool, path_only: bool) -> Result<()> {
 
     if !log.exists() {
         say(&format!(
-            "no log yet at {} — start the agent with `binaryferret start`",
+            "no log yet at {} — start the agent with `byteferret start`",
             log.display()
         ));
         emit(&json!({ "ok": true, "path": log.to_string_lossy(), "exists": false, "lines": [] }));

@@ -1,5 +1,5 @@
 //! Resolves every on-disk location the agent uses, honoring XDG and a set of
-//! BINARYFERRET_* overrides. The overrides let a second, fully isolated agent run
+//! BYTEFERRET_* overrides. The overrides let a second, fully isolated agent run
 //! on the same machine (for local testing) without touching the first's config,
 //! Syncthing home, or REST port.
 
@@ -13,7 +13,7 @@ pub const SYNCTHING_VERSION: &str = "1.30.0";
 pub const TYPST_VERSION: &str = "0.12.0";
 
 /// Folder ID shared by every machine's default vault so `pair` links them.
-pub const DEFAULT_FOLDER_ID: &str = "binaryferret-vault";
+pub const DEFAULT_FOLDER_ID: &str = "byteferret-vault";
 
 /// Default localhost bind for Syncthing's REST/GUI API.
 pub const DEFAULT_GUI_ADDRESS: &str = "127.0.0.1:8384";
@@ -48,12 +48,12 @@ pub struct Paths {
 
 impl Paths {
     pub fn resolve() -> Paths {
-        let config_dir = env_nonempty("BINARYFERRET_CONFIG_DIR")
+        let config_dir = env_nonempty("BYTEFERRET_CONFIG_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("binaryferret"));
-        let data_dir = env_nonempty("BINARYFERRET_DATA_DIR")
+            .unwrap_or_else(|| xdg("XDG_CONFIG_HOME", ".config").join("byteferret"));
+        let data_dir = env_nonempty("BYTEFERRET_DATA_DIR")
             .map(PathBuf::from)
-            .unwrap_or_else(|| xdg("XDG_DATA_HOME", ".local/share").join("binaryferret"));
+            .unwrap_or_else(|| xdg("XDG_DATA_HOME", ".local/share").join("byteferret"));
         Paths {
             config_file: config_dir.join("config.toml"),
             secrets_file: config_dir.join("secrets"),
@@ -70,12 +70,12 @@ impl Paths {
 
 /// Explicit GUI-address override (config value wins if this is unset).
 pub fn gui_address_override() -> Option<String> {
-    env_nonempty("BINARYFERRET_GUI_ADDRESS")
+    env_nonempty("BYTEFERRET_GUI_ADDRESS")
 }
 
 /// Path of the systemd *user* unit the agent installs (FR-1). Follows
-/// XDG_CONFIG_HOME and is intentionally independent of BINARYFERRET_CONFIG_DIR —
+/// XDG_CONFIG_HOME and is intentionally independent of BYTEFERRET_CONFIG_DIR —
 /// systemd only reads units from its standard `systemd/user/` location.
 pub fn systemd_user_unit() -> PathBuf {
-    xdg("XDG_CONFIG_HOME", ".config").join("systemd/user/binaryferret.service")
+    xdg("XDG_CONFIG_HOME", ".config").join("systemd/user/byteferret.service")
 }

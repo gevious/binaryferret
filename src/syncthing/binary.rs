@@ -22,7 +22,7 @@ fn release_arch() -> Result<&'static str> {
     match std::env::consts::ARCH {
         "x86_64" => Ok("amd64"),
         "aarch64" => Ok("arm64"),
-        other => bail!("unsupported architecture '{other}' — BinaryFerret v1 supports x86_64 and arm64 Linux"),
+        other => bail!("unsupported architecture '{other}' — ByteFerret v1 supports x86_64 and arm64 Linux"),
     }
 }
 

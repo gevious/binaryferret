@@ -1,4 +1,4 @@
-//! `binaryferret service install|uninstall|status` — manage the systemd user
+//! `byteferret service install|uninstall|status` — manage the systemd user
 //! service (FR-1). All systemd interaction is confined here; the unit-file
 //! content itself lives in `crate::service` (testable in isolation).
 
@@ -13,9 +13,9 @@ use crate::output::{emit, say};
 use crate::paths::systemd_user_unit;
 use crate::service::{unit_contents, UNIT_NAME};
 
-/// Absolute path of the running binaryferret binary, for baking into the unit.
+/// Absolute path of the running byteferret binary, for baking into the unit.
 fn self_exe() -> Result<String> {
-    let exe = std::env::current_exe().context("locating the binaryferret binary")?;
+    let exe = std::env::current_exe().context("locating the byteferret binary")?;
     let exe = fs::canonicalize(&exe).unwrap_or(exe);
     Ok(exe.to_string_lossy().to_string())
 }
@@ -142,7 +142,7 @@ pub fn status() -> Result<()> {
             }
         ));
     } else {
-        say("install with: binaryferret service install --now");
+        say("install with: byteferret service install --now");
     }
     emit(&json!({
         "ok": true, "action": "status", "installed": installed,

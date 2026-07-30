@@ -51,15 +51,15 @@ pub fn load_context() -> Result<Context> {
 }
 
 /// Applies privacy / connectivity toggles that map to documented options:
-///  - BINARYFERRET_SYNC_ADDRESS       → pin Syncthing's sync listen address (also
+///  - BYTEFERRET_SYNC_ADDRESS       → pin Syncthing's sync listen address (also
 ///    lets two isolated agents coexist on one host for testing).
-///  - BINARYFERRET_DISCOVERY_PUBLIC=false → the getting-started `discovery.public`
+///  - BYTEFERRET_DISCOVERY_PUBLIC=false → the getting-started `discovery.public`
 ///    off switch: no global/local announce, no relays (LAN/VPN only).
 ///
 /// Both are no-ops when unset, so real desktops keep Syncthing's defaults.
 fn apply_runtime_toggles(client: &Client) -> Result<()> {
-    let sync_addr = std::env::var("BINARYFERRET_SYNC_ADDRESS").ok().filter(|s| !s.is_empty());
-    let public = std::env::var("BINARYFERRET_DISCOVERY_PUBLIC").ok();
+    let sync_addr = std::env::var("BYTEFERRET_SYNC_ADDRESS").ok().filter(|s| !s.is_empty());
+    let public = std::env::var("BYTEFERRET_DISCOVERY_PUBLIC").ok();
     if sync_addr.is_none() && public.is_none() {
         return Ok(());
     }
@@ -118,7 +118,7 @@ pub fn add_peer(
     client.put_device(&device)?;
 
     match client.get_folder(folder_id)? {
-        None => say(&format!("(no vault folder '{folder_id}' yet — run `binaryferret init` first; peer added regardless)")),
+        None => say(&format!("(no vault folder '{folder_id}' yet — run `byteferret init` first; peer added regardless)")),
         Some(mut folder) => {
             let already = folder
                 .get("devices")

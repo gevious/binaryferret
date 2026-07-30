@@ -54,7 +54,7 @@ impl Config {
             folder_id: Some(self.folder_id.clone()),
         };
         let body = format!(
-            "# BinaryFerret agent configuration — safe to edit and share (no secrets here).\n\n{}",
+            "# ByteFerret agent configuration — safe to edit and share (no secrets here).\n\n{}",
             toml::to_string(&raw)?
         );
         fs::write(&paths.config_file, body)
@@ -87,7 +87,7 @@ impl Secrets {
         ensure_dir(&paths.config_dir)?;
         let raw = RawSecrets { syncthing_api_key: self.syncthing_api_key.clone() };
         let body = format!(
-            "# BinaryFerret secrets — DO NOT SHARE. Permissions are enforced to 0600.\n\n{}",
+            "# ByteFerret secrets — DO NOT SHARE. Permissions are enforced to 0600.\n\n{}",
             toml::to_string(&raw)?
         );
         fs::write(&paths.secrets_file, body)?;

@@ -2,7 +2,7 @@ name: release
 
 # Build the static musl binaries and publish them as GitHub Release assets
 # whenever a version tag (v*) is pushed. The installer (scripts/install.sh)
-# downloads binaryferret-<target>.tar.gz from the release for the matching tag.
+# downloads byteferret-<target>.tar.gz from the release for the matching tag.
 #
 #   git tag v0.1.0 && git push origin v0.1.0
 #
@@ -51,11 +51,11 @@ jobs:
           targets: ${{ matrix.target }}
       # Builds the release binary for the target (using `cross` for the
       # cross-compiled aarch64 musl target), archives it as
-      # binaryferret-<target>.tar.gz with the `binaryferret` binary at the
+      # byteferret-<target>.tar.gz with the `byteferret` binary at the
       # archive root, and uploads it to the release for this tag.
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
-          bin: binaryferret
+          bin: byteferret
           target: ${{ matrix.target }}
           archive: $bin-$target
           tar: all

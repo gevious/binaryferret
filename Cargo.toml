@@ -1,12 +1,12 @@
 [package]
-name = "binaryferret"
+name = "byteferret"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "P2P document vault desktop agent — orchestrates Syncthing for peer-to-peer sync across your machines."
 
 [[bin]]
-name = "binaryferret"
+name = "byteferret"
 path = "src/main.rs"
 
 [dependencies]

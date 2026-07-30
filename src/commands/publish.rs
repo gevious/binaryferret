@@ -1,4 +1,4 @@
-//! `binaryferret publish <file> [--pdf] [--out <path>] [--email]` — render a vault
+//! `byteferret publish <file> [--pdf] [--out <path>] [--email]` — render a vault
 //! Markdown document to a PDF locally (FR-19) using the bundled Typst, and
 //! optionally open a mail draft with it attached via `xdg-email` (FR-20).
 //!
@@ -29,7 +29,7 @@ fn compile_pdf(typst: &Path, source: &Path, out_pdf: &Path, title: &str) -> Resu
         .file_stem()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "doc".into());
-    let typ_path = dir.join(format!(".{stem}.binaryferret.typ"));
+    let typ_path = dir.join(format!(".{stem}.byteferret.typ"));
     fs::write(&typ_path, doc).with_context(|| format!("writing {}", typ_path.display()))?;
 
     let out = Command::new(typst)
