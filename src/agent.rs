@@ -257,7 +257,6 @@ pub struct PeerSync {
     /// Syncthing's view of our folder on the peer: "valid", "notSharing",
     /// "paused", "unknown", or "" when the peer is offline.
     pub remote_state: String,
-    pub completion: f64,
 }
 
 /// How a connected peer's copy of the vault relates to ours. This is the single
@@ -281,6 +280,21 @@ pub enum ShareState {
 }
 
 impl ShareState {
+    /// Classify one (folder, peer) pair from Syncthing's `remoteState` label.
+    /// Used per-folder by `status` and via `PeerSync::share_state` for the vault,
+    /// so every rendering of "is this being shared back?" agrees.
+    pub fn classify(connected: bool, remote_state: &str) -> ShareState {
+        if !connected {
+            ShareState::Offline
+        } else if remote_state == "valid" {
+            ShareState::Sharing
+        } else if remote_state == "notSharing" || remote_state == "paused" {
+            ShareState::NotSharingBack
+        } else {
+            ShareState::Establishing
+        }
+    }
+
     /// Stable machine-readable tag for `--json` consumers.
     pub fn tag(self) -> &'static str {
         match self {
@@ -305,15 +319,7 @@ impl PeerSync {
     /// The single source of truth for a peer's vault-share status. Every command
     /// derives its verdict from this so their reports always agree.
     pub fn share_state(&self) -> ShareState {
-        if !self.connected {
-            ShareState::Offline
-        } else if self.remote_state == "valid" {
-            ShareState::Sharing
-        } else if self.remote_state == "notSharing" || self.remote_state == "paused" {
-            ShareState::NotSharingBack
-        } else {
-            ShareState::Establishing
-        }
+        ShareState::classify(self.connected, &self.remote_state)
     }
 
     /// True only when the peer is connected AND sharing our vault back.
@@ -343,17 +349,17 @@ pub fn peer_status(ctx: &Context) -> Result<Vec<PeerSync>> {
         };
         let name = d.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let connected = conns.get(&id).map(|c| c.connected).unwrap_or(false);
-        // Only ask the remote-completion question for connected peers — it is
+        // Only ask the remote-state question for connected peers — it is
         // meaningless (and a wasted round trip) when the peer is offline.
-        let (remote_state, completion) = if connected {
+        let remote_state = if connected {
             match ctx.client.folder_completion(&ctx.config.folder_id, &id) {
-                Ok(c) => (c.remote_state, c.completion),
-                Err(_) => (String::new(), 0.0),
+                Ok(c) => c.remote_state,
+                Err(_) => String::new(),
             }
         } else {
-            (String::new(), 0.0)
+            String::new()
         };
-        out.push(PeerSync { id, name, connected, remote_state, completion });
+        out.push(PeerSync { id, name, connected, remote_state });
     }
     Ok(out)
 }
@@ -440,7 +446,6 @@ mod tests {
             name: name.to_string(),
             connected,
             remote_state: remote_state.to_string(),
-            completion: 0.0,
         }
     }
 

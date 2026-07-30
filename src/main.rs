@@ -35,12 +35,15 @@ enum Cmd {
     Start,
     /// Stop the agent
     Stop,
-    /// Create or attach a vault at <path>
+    /// Bring a folder into sync (the first becomes the vault; ids are automatic)
     Init {
         path: String,
         /// Attach an existing folder instead of scaffolding (won't overwrite files)
         #[arg(long)]
         existing: bool,
+        /// Human-friendly folder name (defaults to the directory name)
+        #[arg(long)]
+        label: Option<String>,
     },
     /// Pair with another machine (Path A, peer-to-peer)
     Pair {
@@ -136,7 +139,7 @@ fn main() {
     let result = match &cli.cmd {
         Cmd::Start => commands::start::start(),
         Cmd::Stop => commands::stop::stop(),
-        Cmd::Init { path, existing } => commands::init::init(path, *existing),
+        Cmd::Init { path, existing, label } => commands::init::init(path, *existing, label.as_deref()),
         Cmd::Pair {
             with,
             accept,

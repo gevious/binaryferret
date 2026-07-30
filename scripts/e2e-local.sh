@@ -40,7 +40,19 @@ echo "== sync B->A =="
 echo "reply" >> "$ROOT/b/vault/hello.md"
 for i in $(seq 1 60); do grep -q reply "$ROOT/a/vault/hello.md" 2>/dev/null && { echo "synced B->A in ${i}s"; break; }; sleep 1; done
 
+echo "== second folder (existing dir, auto id) =="
+mkdir -p "$ROOT/a/recipes"
+echo "pancakes" > "$ROOT/a/recipes/r1.md"
+FID=$(run_a init "$ROOT/a/recipes" --label Recipes --json | python3 -c 'import sys,json;print(json.load(sys.stdin)["folderId"])')
+echo "generated folder id: $FID"
+run_a pair --with "$ID_B" --folder "$FID"
+sleep 2
+run_b pair "$ID_A" --accept --folder "$FID" --path "$ROOT/b/recipes"
+ok2=no
+for i in $(seq 1 60); do [ -f "$ROOT/b/recipes/r1.md" ] && { echo "second folder synced in ${i}s"; ok2=yes; break; }; sleep 1; done
+
 run_a status
 run_a stop; run_b stop
-[ "$ok" = yes ] || { echo "FAIL"; exit 1; }
+[ "$ok" = yes ] || { echo "FAIL: vault did not sync"; exit 1; }
+[ "$ok2" = yes ] || { echo "FAIL: second folder did not sync"; exit 1; }
 echo "PASS"

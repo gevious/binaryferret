@@ -102,7 +102,7 @@ fn pair_with(ctx: &Context, a: &PairArgs, peer: &str) -> Result<()> {
         .unwrap_or(false);
     say("");
     if connected {
-        say("That peer is already connected, so the vault is now shared both ways —");
+        say("That peer is already connected, so the folder is now shared both ways —");
         say("syncing will begin shortly. Confirm with `byteferret status`. (No `--accept` needed.)");
     } else {
         say("Not connected to that peer yet. If they already know each other, they'll");

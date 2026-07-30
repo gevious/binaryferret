@@ -86,6 +86,18 @@ A folder a peer offers is created beside your vault, or wherever `--path` says.
 Rejecting an offer declines it; rejecting a folder you already share stops
 sharing it, leaving the folder and its files in place.
 
+### Syncing more folders
+
+Any directory — new or already full of files — can be brought into sync;
+folder ids are generated automatically (the first `init` is special: it becomes
+the vault). One folder can be shared with any number of peers, and each peer
+can get a different subset:
+
+```sh
+byteferret init ~/recipes --label Recipes        # existing dir, nothing changed in it
+byteferret pair --with <peer-id> --folder <id>   # share it (id shown by init/status)
+```
+
 Both verbs always name one peer by device ID — there is no "accept everything
 waiting". Anyone who can reach your machine can put a request in that list, so a
 bulk accept would hand them a folder alongside the machine you meant to approve.
@@ -99,7 +111,7 @@ A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 | Command | What it does |
 |---|---|
 | `byteferret start` / `stop` | Start/stop the managed Syncthing (idempotent) |
-| `byteferret init <path> [--existing]` | Create or attach a vault |
+| `byteferret init <path> [--label <name>]` | Bring a folder into sync (first becomes the vault; ids automatic) |
 | `byteferret pair --with <id> [--folder <f>]` | Pair with a machine and share a folder |
 | `byteferret pair <id> --accept \| --reject [--folder <f> \| --all-folders]` | Approve/decline a machine, or one of its folders |
 | `byteferret status` | Agent health, hostname + device ID, peers & folders, requests, conflicts |

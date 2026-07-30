@@ -23,36 +23,55 @@ fn short(id: &str) -> String {
     id.chars().take(7).collect()
 }
 
-/// The folders currently connected with a peer, each annotated with its share
-/// state (e.g. `byteferret-vault (establishing)`). Empty when the peer is
-/// offline — nothing is connected — which the caller renders as "no folders
-/// connected".
-fn connected_folders(folder: &str, p: &PeerSync) -> Vec<String> {
-    if !p.connected {
-        return vec![];
-    }
-    let annotation = match p.share_state() {
+/// One registered Syncthing folder, as `status` reports it.
+struct FolderInfo {
+    id: String,
+    label: String,
+    path: String,
+    /// Device ids the folder is shared with (this device excluded).
+    peers: Vec<String>,
+    state: String,
+}
+
+/// How one (folder, peer) pair renders next to the folder id, e.g.
+/// ` (establishing)` or ` (42%)`; empty when fully in sync or offline.
+fn share_annotation(state: ShareState, completion: f64) -> String {
+    match state {
         ShareState::Sharing => {
-            if p.completion >= 99.5 {
+            if completion >= 99.5 {
                 String::new()
             } else {
-                format!(" ({:.0}%)", p.completion)
+                format!(" ({completion:.0}%)")
             }
         }
         ShareState::Establishing => " (establishing)".to_string(),
         ShareState::NotSharingBack => " (peer not sharing back)".to_string(),
-        ShareState::Offline => String::new(), // unreachable: gated by `p.connected` above
-    };
-    vec![format!("{}{annotation}", sanitize(folder))]
+        ShareState::Offline => String::new(),
+    }
 }
 
-/// Machine-readable form of the same list for `--json`: the folder id plus its
-/// state, so consumers don't have to parse the annotated string.
-fn folders_synced(folder: &str, p: &PeerSync) -> Value {
-    if !p.connected {
-        return json!([]);
-    }
-    json!([{ "folder": folder, "state": p.share_state().tag(), "completion": p.completion }])
+/// Per-folder share state between one peer and us: every folder shared with the
+/// peer, with the same classification `doctor` uses for the vault. Ordered as
+/// (folder id, state, completion).
+fn peer_folder_states(
+    ctx: &crate::agent::Context,
+    folders: &[FolderInfo],
+    p: &PeerSync,
+) -> Vec<(String, ShareState, f64)> {
+    folders
+        .iter()
+        .filter(|f| f.peers.contains(&p.id))
+        .map(|f| {
+            if !p.connected {
+                return (f.id.clone(), ShareState::Offline, 0.0);
+            }
+            let (state, completion) = match ctx.client.folder_completion(&f.id, &p.id) {
+                Ok(c) => (ShareState::classify(true, &c.remote_state), c.completion),
+                Err(_) => (ShareState::Establishing, 0.0),
+            };
+            (f.id.clone(), state, completion)
+        })
+        .collect()
 }
 
 /// Reports agent + Syncthing health, this machine's identity (hostname, device
@@ -89,6 +108,36 @@ pub fn status() -> Result<()> {
     let pending_folders = ctx.client.pending_folders()?;
     let folder = &ctx.config.folder_id;
 
+    // Every registered folder — the vault plus any additional `init`ed or
+    // accepted folders — so multi-folder setups are fully visible here.
+    let folders: Vec<FolderInfo> = ctx
+        .client
+        .get_folders()
+        .unwrap_or_default()
+        .iter()
+        .map(|f| {
+            let id = f.get("id").and_then(Value::as_str).unwrap_or("").to_string();
+            let state = ctx.client.folder_status(&id).map(|s| s.state).unwrap_or_default();
+            FolderInfo {
+                label: f.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
+                path: f.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
+                peers: f
+                    .get("devices")
+                    .and_then(Value::as_array)
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|d| d.get("deviceID").and_then(Value::as_str))
+                            .filter(|d| *d != device_id)
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                id,
+                state,
+            }
+        })
+        .collect();
+
     let mut folder_state = String::new();
     let mut need_bytes: i64 = 0;
     if ctx.config.vault_path.is_some() {
@@ -102,6 +151,11 @@ pub fn status() -> Result<()> {
         Some(v) => find_files(Path::new(v), ".sync-conflict-", 100).iter().map(|p| p.to_string_lossy().to_string()).collect(),
         None => vec![],
     };
+
+    // Per-peer folder share states, computed once and used by both the human
+    // and the JSON rendering below.
+    let shares: Vec<Vec<(String, ShareState, f64)>> =
+        peers.iter().map(|p| peer_folder_states(&ctx, &folders, p)).collect();
 
     // --- human output ---
     say("agent:      running");
@@ -119,11 +173,27 @@ pub fn status() -> Result<()> {
         say(&format!("sync state: {}{extra}", if folder_state.is_empty() { "unknown" } else { &folder_state }));
     }
     say("mode:       p2p");
+    // The vault has its own lines above; list all folders once there is more
+    // to the picture than the vault alone.
+    if folders.iter().any(|f| f.id != *folder) {
+        say("folders:");
+        for f in &folders {
+            let label = sanitize(&f.label);
+            let named = if label.is_empty() { String::new() } else { format!(" (\"{label}\")") };
+            let state = if f.state.is_empty() { "unknown".to_string() } else { f.state.clone() };
+            say(&format!(
+                "  - {}{named}  {}  — {state}, shared with {} peer(s)",
+                sanitize(&f.id),
+                sanitize(&f.path),
+                f.peers.len(),
+            ));
+        }
+    }
     if peers.is_empty() {
         say("peers:      none — share the device id above and run `byteferret pair --with <id>` on the other machine");
     } else {
         say("peers:");
-        for p in &peers {
+        for (p, shared) in peers.iter().zip(&shares) {
             let addr = conns
                 .get(&p.id)
                 .map(|c| c.address.clone())
@@ -136,12 +206,15 @@ pub fn status() -> Result<()> {
                 short(&p.id),
                 if p.connected { "connected" } else { "disconnected" },
             ));
-            let folders = connected_folders(folder, p);
-            if folders.is_empty() {
-                say("      no folders connected");
+            if shared.is_empty() {
+                say("      no folders shared");
             } else {
-                for f in &folders {
-                    say(&format!("      {f}"));
+                for (fid, state, completion) in shared {
+                    say(&format!(
+                        "      {}{}",
+                        sanitize(fid),
+                        share_annotation(*state, *completion)
+                    ));
                 }
             }
         }
@@ -206,7 +279,14 @@ pub fn status() -> Result<()> {
         "syncState": if folder_state.is_empty() { Value::Null } else { Value::String(folder_state) },
         "needBytes": need_bytes,
         "mode": "p2p",
-        "peers": peers.iter().map(|p| json!({
+        "folders": folders.iter().map(|f| json!({
+            "id": f.id,
+            "label": f.label,
+            "path": f.path,
+            "state": f.state,
+            "peers": f.peers,
+        })).collect::<Vec<_>>(),
+        "peers": peers.iter().zip(&shares).map(|(p, shared)| json!({
             "deviceId": p.id,
             "name": p.name,
             "connected": p.connected,
@@ -214,7 +294,9 @@ pub fn status() -> Result<()> {
             "remoteState": p.remote_state,
             "sharingVault": p.sharing(),
             "shareState": p.share_state().tag(),
-            "foldersSynced": folders_synced(folder, p),
+            "foldersSynced": shared.iter().map(|(fid, state, completion)| json!({
+                "folder": fid, "state": state.tag(), "completion": completion,
+            })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "pending": pending.iter().map(|(pid, info)| json!({
             "deviceId": pid,
