@@ -2,17 +2,17 @@
 # BinaryFerret installer — fetch the prebuilt agent binary and (optionally) set up
 # the systemd user service. Designed to be run straight from a URL:
 #
-#   curl -fsSL https://get.binaryferret.com/install.sh | sh
+#   curl -fsSL https://binaryferret.com/install.sh | sh
 #
 # Environment overrides:
-#   BINARYFERRET_REPO            GitHub owner/repo         (default: binaryferret/binaryferret)
+#   BINARYFERRET_REPO            GitHub owner/repo         (default: gevious/binaryferret)
 #   BINARYFERRET_VERSION         release tag to install    (default: latest)
 #   BINARYFERRET_PREFIX          install dir               (default: ~/.local/bin)
 #   BINARYFERRET_ENABLE_SERVICE  =1 to install+start the systemd user service
 #   BINARYFERRET_FROM_SOURCE     =1 to build with cargo instead of downloading
 set -eu
 
-REPO="${BINARYFERRET_REPO:-binaryferret/binaryferret}"
+REPO="${BINARYFERRET_REPO:-gevious/binaryferret}"
 PREFIX="${BINARYFERRET_PREFIX:-$HOME/.local/bin}"
 VERSION="${BINARYFERRET_VERSION:-latest}"
 

@@ -17,7 +17,7 @@ Ships as a single, statically linked (~1.5 MB) musl binary.
 ## Install
 
 ```sh
-curl -fsSL https://get.binaryferret.com/install.sh | sh
+curl -fsSL https://binaryferret.com/install.sh | sh
 ```
 
 This downloads the prebuilt binary to `~/.local/bin/binaryferret`. Options via

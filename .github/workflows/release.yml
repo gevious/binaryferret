@@ -1,0 +1,65 @@
+name: release
+
+# Build the static musl binaries and publish them as GitHub Release assets
+# whenever a version tag (v*) is pushed. The installer (scripts/install.sh)
+# downloads binaryferret-<target>.tar.gz from the release for the matching tag.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to build a release for (e.g. v0.1.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create the GitHub release (idempotent)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists — reusing it."
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          fi
+
+  upload-assets:
+    needs: create-release
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - x86_64-unknown-linux-musl
+          - aarch64-unknown-linux-musl
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      # Builds the release binary for the target (using `cross` for the
+      # cross-compiled aarch64 musl target), archives it as
+      # binaryferret-<target>.tar.gz with the `binaryferret` binary at the
+      # archive root, and uploads it to the release for this tag.
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: binaryferret
+          target: ${{ matrix.target }}
+          archive: $bin-$target
+          tar: all
+          zip: none
+          checksum: sha256
+          ref: refs/tags/${{ github.event.inputs.tag || github.ref_name }}
+          token: ${{ secrets.GITHUB_TOKEN }}
