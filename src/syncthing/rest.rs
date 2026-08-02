@@ -174,6 +174,13 @@ impl Client {
         self.req("PUT", &format!("/rest/config/folders/{id}"), Some(folder)).map(|_| ())
     }
 
+    /// Remove a folder from Syncthing entirely (unregister it on this machine).
+    /// Stops all syncing and unshares it from every peer; the directory and its
+    /// files on disk are left untouched — Syncthing only drops the folder config.
+    pub fn delete_folder(&self, id: &str) -> Result<()> {
+        self.req("DELETE", &format!("/rest/config/folders/{id}"), None).map(|_| ())
+    }
+
     pub fn folder_status(&self, id: &str) -> Result<FolderStatus> {
         self.get_typed(&format!("/rest/db/status?folder={}", urlencode(id)))
     }

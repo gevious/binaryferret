@@ -4,6 +4,8 @@
 
 // `Context` is imported anonymously: the trait's `.with_context()` is what we
 // want, and the name itself belongs to this module's own `Context` struct.
+use std::path::{Path, PathBuf};
+
 use anyhow::{anyhow, bail, Context as _, Result};
 use serde_json::{json, Value};
 
@@ -162,6 +164,27 @@ pub fn unshare_folder(client: &Client, folder_id: &str, device_id: &str) -> Resu
     Ok(true)
 }
 
+/// The id of a *different* folder already registered at `dir`, if any.
+///
+/// Two folders that point at the same directory are a data hazard: both are
+/// `sendreceive`, so each reconciles the shared directory against its own peer's
+/// index and deletes or overwrites whatever the other put there. This is the
+/// check that turns "second folder silently overwrites the first" into a refusal.
+/// Paths are compared canonically where they exist, so `~/a`, `a/`, and a
+/// symlinked route to the same directory all count as the same place.
+pub fn folder_registered_at(client: &Client, dir: &Path) -> Result<Option<String>> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let target = canon(dir);
+    for f in client.get_folders()? {
+        let Some(id) = f.get("id").and_then(Value::as_str) else { continue };
+        let Some(p) = f.get("path").and_then(Value::as_str) else { continue };
+        if canon(&PathBuf::from(p)) == target {
+            return Ok(Some(id.to_string()));
+        }
+    }
+    Ok(None)
+}
+
 /// Creates a folder a peer offered us, at `path`, shared with that peer.
 /// `label` is only ever used as display text — the caller decides the path.
 pub fn create_shared_folder(
@@ -171,14 +194,25 @@ pub fn create_shared_folder(
     path: &str,
     device_id: &str,
 ) -> Result<()> {
+    // Last line of defence against merging two folders into one directory. The
+    // caller is expected to have chosen a free path already; this guarantees no
+    // code path can ever register a second folder on top of an existing one.
+    if let Some(other) = folder_registered_at(client, Path::new(path))? {
+        if other != folder_id {
+            bail!(
+                "refusing to create folder '{folder_id}' at {path}: folder '{other}' already \
+                 lives there, and two folders in one directory would overwrite each other"
+            );
+        }
+    }
     std::fs::create_dir_all(path).with_context(|| format!("creating {path}"))?;
-    let folder = vault_folder_config(folder_id, label, path, &[device_id.to_string()]);
+    let folder = folder_config(folder_id, label, path, &[device_id.to_string()]);
     client.put_folder(&folder)
 }
 
 /// Syncthing device ids are uppercase base32 whose dashes are only visual
 /// grouping, so neither case nor dashes are significant when comparing.
-fn normalize_id(s: &str) -> String {
+pub fn normalize_id(s: &str) -> String {
     s.chars().filter(|c| *c != '-').flat_map(char::to_uppercase).collect()
 }
 
@@ -228,6 +262,87 @@ pub fn resolve_device_target(target: &str, candidates: &[(String, String)]) -> R
     }
 }
 
+/// The user-facing name of a folder: its Syncthing id with the random
+/// uniqueness suffix (`-` + six hex digits, added by `init`) stripped off. The
+/// suffix keeps ids globally unique so two machines that independently create a
+/// same-named folder never silently merge; it is an implementation detail the
+/// user never sees or types. Ids without such a suffix (e.g. a legacy
+/// `byteferret-vault`) are returned unchanged.
+pub fn folder_name(id: &str) -> &str {
+    if let Some((base, suffix)) = id.rsplit_once('-') {
+        if suffix.len() == 6 && suffix.chars().all(|c| c.is_ascii_hexdigit()) && !base.is_empty() {
+            return base;
+        }
+    }
+    id
+}
+
+/// Resolve a user-typed folder reference — its visible name, full id, or an
+/// unambiguous name/id prefix — to the real Syncthing folder id of a folder that
+/// exists on this machine. Names are unique, so an exact name match is decisive;
+/// otherwise we accept an unambiguous prefix and refuse an ambiguous one.
+pub fn resolve_folder(client: &Client, wanted: &str) -> Result<String> {
+    let ids: Vec<String> = client
+        .get_folders()?
+        .iter()
+        .filter_map(|f| f.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+
+    // Exact match on the visible name or the full id wins outright.
+    if let Some(id) = ids
+        .iter()
+        .find(|id| folder_name(id).eq_ignore_ascii_case(wanted) || id.eq_ignore_ascii_case(wanted))
+    {
+        return Ok(id.clone());
+    }
+
+    // Otherwise an unambiguous prefix of a name (or id) is enough.
+    let matches: Vec<&String> = ids
+        .iter()
+        .filter(|id| {
+            folder_name(id).to_lowercase().starts_with(&wanted.to_lowercase())
+                || id.to_lowercase().starts_with(&wanted.to_lowercase())
+        })
+        .collect();
+    match matches.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => bail!(
+            "no folder here is named '{}'.{}",
+            wanted,
+            list_folders(&ids)
+        ),
+        many => bail!(
+            "'{}' matches {} folders — be more specific.{}",
+            wanted,
+            many.len(),
+            list_folders(&many.iter().map(|s| (*s).clone()).collect::<Vec<_>>())
+        ),
+    }
+}
+
+/// Names of the folders registered here, for an error hint.
+fn list_folders(ids: &[String]) -> String {
+    if ids.is_empty() {
+        return "\nNo folders here yet — run `byteferret init <path>`.".to_string();
+    }
+    let mut s = String::from("\nFolders here:");
+    for id in ids {
+        s.push_str(&format!("\n  {}", folder_name(id)));
+    }
+    s
+}
+
+/// Resolve a pairing target that may be a user-set alias *or* a device id
+/// (prefix). A local alias is trusted — the user set it themselves — so an exact
+/// alias match wins outright; otherwise we fall back to id-prefix matching, which
+/// deliberately never matches a peer-chosen name (see `resolve_device_target`).
+pub fn resolve_peer(config: &Config, target: &str, candidates: &[(String, String)]) -> Result<String> {
+    if let Some(id) = config.device_for_alias(target) {
+        return Ok(id.to_string());
+    }
+    resolve_device_target(target, candidates)
+}
+
 /// Render candidates for an error message. Names come from the peer, so they are
 /// sanitized and shown only as a hint — the id is what the user must type.
 fn list_candidates(heading: &str, candidates: &[(String, String)]) -> String {
@@ -246,17 +361,32 @@ fn list_candidates(heading: &str, candidates: &[(String, String)]) -> String {
     s
 }
 
-/// A peer's connectivity plus whether it is actually sharing the vault back.
-/// The `remote_state`/`sharing` distinction is what separates a healthy link
-/// from the silent stall where two machines are connected but one never shared
-/// the folder, so nothing ever transfers.
+/// A peer's connectivity plus whether the folders we share with it are actually
+/// reciprocated. `share` is the aggregate across every folder shared with the
+/// peer, so it still catches the silent stall where two machines are connected
+/// but one never shared a folder back and nothing ever transfers.
 pub struct PeerSync {
     pub id: String,
     pub name: String,
     pub connected: bool,
-    /// Syncthing's view of our folder on the peer: "valid", "notSharing",
-    /// "paused", "unknown", or "" when the peer is offline.
-    pub remote_state: String,
+    /// Worst share state across every folder shared with this peer (`Offline`
+    /// when disconnected; `Sharing` when there is nothing amiss, including a bare
+    /// connection with no folders shared yet).
+    pub share: ShareState,
+}
+
+/// Order two share states by severity, keeping the worse one — used to fold a
+/// peer's per-folder states into a single verdict.
+fn worse(a: ShareState, b: ShareState) -> ShareState {
+    fn rank(s: ShareState) -> u8 {
+        match s {
+            ShareState::Sharing => 0,
+            ShareState::Offline => 1,
+            ShareState::Establishing => 2,
+            ShareState::NotSharingBack => 3,
+        }
+    }
+    if rank(b) > rank(a) { b } else { a }
 }
 
 /// How a connected peer's copy of the vault relates to ours. This is the single
@@ -316,31 +446,34 @@ impl PeerSync {
         }
     }
 
-    /// The single source of truth for a peer's vault-share status. Every command
+    /// The single source of truth for a peer's share status. Every command
     /// derives its verdict from this so their reports always agree.
     pub fn share_state(&self) -> ShareState {
-        ShareState::classify(self.connected, &self.remote_state)
+        self.share
     }
 
-    /// True only when the peer is connected AND sharing our vault back.
+    /// True when nothing is amiss: connected and every shared folder reciprocated
+    /// (also true for a bare connection with no folders shared yet).
     pub fn sharing(&self) -> bool {
-        self.share_state() == ShareState::Sharing
+        self.share == ShareState::Sharing
     }
 
-    /// A connected peer that has not shared the vault back (the stall case).
+    /// A connected peer that has not shared a folder back (the stall case).
     /// Excludes the transient "unknown"/establishing state to avoid false alarms
     /// right after a connection comes up.
     pub fn stalled(&self) -> bool {
-        self.share_state() == ShareState::NotSharingBack
+        self.share == ShareState::NotSharingBack
     }
 }
 
 /// Summarize every paired peer (excluding this device): connection state and,
-/// for connected peers, whether they share the vault back. Shared by `pair
-/// --show` and `doctor` so both surface the same truth.
+/// for connected peers, whether the folders shared with them are reciprocated —
+/// aggregated across all such folders. Shared by `status` and `doctor` so both
+/// surface the same truth.
 pub fn peer_status(ctx: &Context) -> Result<Vec<PeerSync>> {
     let my_id = ctx.client.my_device_id()?;
     let conns = ctx.client.connections()?;
+    let folders = ctx.client.get_folders()?;
     let mut out = Vec::new();
     for d in ctx.client.get_devices()? {
         let id = match d.get("deviceID").and_then(Value::as_str) {
@@ -349,23 +482,40 @@ pub fn peer_status(ctx: &Context) -> Result<Vec<PeerSync>> {
         };
         let name = d.get("name").and_then(Value::as_str).unwrap_or("").to_string();
         let connected = conns.get(&id).map(|c| c.connected).unwrap_or(false);
-        // Only ask the remote-state question for connected peers — it is
-        // meaningless (and a wasted round trip) when the peer is offline.
-        let remote_state = if connected {
-            match ctx.client.folder_completion(&ctx.config.folder_id, &id) {
-                Ok(c) => c.remote_state,
-                Err(_) => String::new(),
-            }
+
+        // Folders we share with this peer, so the verdict spans every folder
+        // rather than one privileged "vault".
+        let shared_ids: Vec<String> = folders
+            .iter()
+            .filter(|f| {
+                f.get("devices")
+                    .and_then(Value::as_array)
+                    .map(|a| a.iter().any(|dv| dv.get("deviceID").and_then(Value::as_str) == Some(&id)))
+                    .unwrap_or(false)
+            })
+            .filter_map(|f| f.get("id").and_then(Value::as_str).map(str::to_string))
+            .collect();
+
+        // Asking the remote-state question is meaningless (and a wasted round
+        // trip) when offline; a bare connection with nothing shared is fine.
+        let share = if !connected {
+            ShareState::Offline
         } else {
-            String::new()
+            shared_ids.iter().fold(ShareState::Sharing, |acc, fid| {
+                let st = match ctx.client.folder_completion(fid, &id) {
+                    Ok(c) => ShareState::classify(true, &c.remote_state),
+                    Err(_) => ShareState::Establishing,
+                };
+                worse(acc, st)
+            })
         };
-        out.push(PeerSync { id, name, connected, remote_state });
+        out.push(PeerSync { id, name, connected, share });
     }
     Ok(out)
 }
 
-/// Standard folder settings for the vault (near-real-time sync, FR-6/FR-9/FR-17).
-pub fn vault_folder_config(id: &str, label: &str, path: &str, peers: &[String]) -> Value {
+/// Standard folder settings (near-real-time sync, FR-6/FR-9/FR-17).
+pub fn folder_config(id: &str, label: &str, path: &str, peers: &[String]) -> Value {
     let devices: Vec<Value> = peers.iter().map(|p| json!({ "deviceID": p })).collect();
     json!({
         "id": id,
@@ -378,6 +528,37 @@ pub fn vault_folder_config(id: &str, label: &str, path: &str, peers: &[String]) 
         "devices": devices,
         "versioning": { "type": "" }, // v1: minimal on desktop; the hub is canonical history
     })
+}
+
+#[cfg(test)]
+mod resolve_peer_tests {
+    use super::resolve_peer;
+    use crate::config::Config;
+    use std::collections::BTreeMap;
+
+    const A: &str = "AAAAAAA-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+    const C: &str = "QQQQQQQ-BBBBBBB-CCCCCCC-DDDDDDD-EEEEEEE-FFFFFFF-GGGGGGG-HHHHHHH";
+
+    fn cfg_with(alias: &str, id: &str) -> Config {
+        let mut aliases = BTreeMap::new();
+        aliases.insert(id.to_string(), alias.to_string());
+        Config { gui_address: String::new(), aliases }
+    }
+
+    #[test]
+    fn a_trusted_alias_resolves_even_with_no_candidates() {
+        let cfg = cfg_with("laptop", A);
+        // No candidate list at all — the alias alone identifies the device.
+        assert_eq!(resolve_peer(&cfg, "laptop", &[]).unwrap(), A);
+        assert_eq!(resolve_peer(&cfg, "LAPTOP", &[]).unwrap(), A); // case-insensitive
+    }
+
+    #[test]
+    fn falls_back_to_id_prefix_when_no_alias_matches() {
+        let cfg = cfg_with("laptop", A);
+        let cands = vec![(C.to_string(), "desktop".to_string())];
+        assert_eq!(resolve_peer(&cfg, "QQQQQQQ", &cands).unwrap(), C);
+    }
 }
 
 #[cfg(test)]
@@ -438,14 +619,16 @@ mod target_tests {
 
 #[cfg(test)]
 mod tests {
-    use super::PeerSync;
+    use super::{PeerSync, ShareState};
 
+    // Build a single-folder peer whose aggregate share state is what that one
+    // folder's `remote_state` classifies to — the pre-multi-folder behaviour.
     fn peer(name: &str, connected: bool, remote_state: &str) -> PeerSync {
         PeerSync {
             id: "ABCDEFG-HIJKLMN".to_string(),
             name: name.to_string(),
             connected,
-            remote_state: remote_state.to_string(),
+            share: ShareState::classify(connected, remote_state),
         }
     }
 
@@ -480,5 +663,25 @@ mod tests {
     fn label_falls_back_to_short_id() {
         assert_eq!(peer("laptop", true, "valid").label(), "laptop");
         assert_eq!(peer("", true, "valid").label(), "ABCDEFG");
+    }
+}
+
+#[cfg(test)]
+mod folder_name_tests {
+    use super::folder_name;
+
+    #[test]
+    fn strips_the_random_hex_suffix() {
+        assert_eq!(folder_name("recipes-a3f9c1"), "recipes");
+        // A name that itself contains dashes keeps them; only the suffix goes.
+        assert_eq!(folder_name("work-notes-00ffab"), "work-notes");
+    }
+
+    #[test]
+    fn leaves_ids_without_a_hex_suffix_alone() {
+        assert_eq!(folder_name("byteferret-vault"), "byteferret-vault"); // legacy id
+        assert_eq!(folder_name("recipes"), "recipes");
+        assert_eq!(folder_name("notes-xyz123"), "notes-xyz123"); // not all hex
+        assert_eq!(folder_name("notes-abc12"), "notes-abc12"); // 5 chars, not 6
     }
 }

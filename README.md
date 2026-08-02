@@ -50,7 +50,7 @@ to fetch the pinned Syncthing (and Typst, for `publish`).
 ## Quick start (peer-to-peer)
 
 ```sh
-byteferret init ~/vault            # create a vault (scaffolds a starter structure)
+byteferret init ~/notes            # register a folder to sync (named "notes")
 byteferret service install --now   # auto-start the agent on login (optional)
 
 # On machine A:
@@ -61,13 +61,16 @@ byteferret pair --with <A's-device-id>
 
 # Back on machine A:
 byteferret status                  # shows B's request, with its device ID
-byteferret pair <B's-device-id> --accept                        # approve the machine
-byteferret pair <B's-device-id> --accept --folder <folder-id>   # share a folder with it
+byteferret pair <B's-device-id> --accept                     # approve the machine
+byteferret pair <B's-device-id> --accept --folder notes      # share a folder with it
 
 byteferret status                  # health, device id, peers, folders, sync state
 ```
 
-Edit anything in `~/vault` and it syncs to your paired machines automatically.
+Edit anything in `~/notes` and it syncs to your paired machines automatically.
+Every folder is equal — there is no privileged "vault". You refer to a folder by
+its **name** (`notes` above); ids are generated for you and are globally unique,
+so a folder name only has to be unique on each machine.
 
 ### Accepting is per machine *and* per folder
 
@@ -82,20 +85,51 @@ byteferret pair <id> --reject --folder recipes      # withdraw one, keep the res
 byteferret pair <id> --accept --all-folders         # take up everything it offers
 ```
 
-A folder a peer offers is created beside your vault, or wherever `--path` says.
-Rejecting an offer declines it; rejecting a folder you already share stops
-sharing it, leaving the folder and its files in place.
+A folder a peer offers is created in the current directory (named after the
+folder), or wherever `--path` says. Rejecting an offer declines it; rejecting a
+folder you already share stops sharing it *with that one peer*, leaving the
+folder and its files in place.
+
+To stop sharing a folder, use `byteferret unpair`:
+
+```sh
+byteferret unpair recipes --with laptop   # withdraw it from one peer; stays here + shared with others
+byteferret unpair recipes                 # remove it from this machine entirely (asks to confirm)
+byteferret unpair recipes --yes           # …skip the prompt (for scripts)
+```
+
+Without `--with` it unshares from every peer and unregisters the folder here, so
+it asks first (there is no prompt in `--json` mode — pass `--yes`). Either way
+your files stay on disk; only the sharing is removed, so `byteferret init <path>`
+re-adds it later.
+
+### Naming a device
+
+Device IDs are long. Give one a local alias and then use the alias anywhere an
+ID is expected — including when you first pair, before the device is even known:
+
+```sh
+byteferret alias FIRSTSEG-... laptop   # or an unambiguous prefix of a known peer
+byteferret pair --with laptop          # pair by alias
+byteferret pair laptop --accept        # accept by alias
+byteferret status                      # shows "laptop (FIRSTSEG…)"; add -v for the full ID
+```
+
+Aliases are stored locally in `config.toml`, so unlike a peer's own name (which
+the remote machine chooses) they are trusted: `pair` will resolve one to its
+device ID. `byteferret alias` with no arguments lists them; `--remove` clears one.
 
 ### Syncing more folders
 
-Any directory — new or already full of files — can be brought into sync;
-folder ids are generated automatically (the first `init` is special: it becomes
-the vault). One folder can be shared with any number of peers, and each peer
+Any directory — new or already full of files — can be brought into sync; ids are
+generated automatically and the folder is named after its directory (or
+`--label`). Names must be unique on a machine, so a second folder by the same
+name is refused. One folder can be shared with any number of peers, and each peer
 can get a different subset:
 
 ```sh
-byteferret init ~/recipes --label Recipes        # existing dir, nothing changed in it
-byteferret pair --with <peer-id> --folder <id>   # share it (id shown by init/status)
+byteferret init ~/recipes --label recipes          # existing dir, nothing changed in it
+byteferret pair --with <peer-id> --folder recipes  # share it by name
 ```
 
 Both verbs always name one peer by device ID — there is no "accept everything
@@ -111,10 +145,12 @@ A fuller two-machine walkthrough (`RUN-TWO-DESKTOPS.md`) and the product vision
 | Command | What it does |
 |---|---|
 | `byteferret start` / `stop` | Start/stop the managed Syncthing (idempotent) |
-| `byteferret init <path> [--label <name>]` | Bring a folder into sync (first becomes the vault; ids automatic) |
-| `byteferret pair --with <id> [--folder <f>]` | Pair with a machine and share a folder |
-| `byteferret pair <id> --accept \| --reject [--folder <f> \| --all-folders]` | Approve/decline a machine, or one of its folders |
-| `byteferret status` | Agent health, hostname + device ID, peers & folders, requests, conflicts |
+| `byteferret init <path> [--label <name>]` | Bring a folder into sync (names unique per machine; ids automatic) |
+| `byteferret pair --with <id> [--folder <name>]` | Pair with a machine and share a folder (the sole folder if just one) |
+| `byteferret pair <id> --accept \| --reject [--folder <name> \| --all-folders]` | Approve/decline a machine, or one of its folders |
+| `byteferret unpair <name> [--with <peer>]` | Stop sharing a folder — from one peer with `--with`, else remove it here entirely (confirms first; files kept) |
+| `byteferret alias <id> <name>` | Label a device locally (usable as `<id>`; `--remove` to clear, no args to list) |
+| `byteferret status [-v]` | Agent health, hostname + device ID, peers & folders, requests, conflicts (`-v` = full device IDs) |
 | `byteferret doctor [--fix]` | Diagnose (and optionally repair) the setup |
 | `byteferret logs [-n N] [-f]` | Show/follow the agent log |
 | `byteferret publish <file> [--pdf] [--email]` | Render a doc to PDF locally |

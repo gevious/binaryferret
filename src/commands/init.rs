@@ -1,12 +1,14 @@
 //! `byteferret init <path> [--label <name>]` — bring a directory into sync.
 //!
-//! The first init on a machine becomes the *primary vault* and uses the
-//! well-known folder id (`byteferret-vault`) so a fleet's default vaults link
-//! up when paired. Every later init registers the directory as an additional
-//! folder under an auto-generated id — the id is an implementation detail the
-//! user never has to choose. Re-running init on an already-registered path
-//! updates that folder in place (preserving its id and peers), so init is
-//! always safe to repeat.
+//! Every directory registers as a folder under an auto-generated id of the form
+//! `<name>-<6 hex>`. The name is the visible identifier (from `--label` or the
+//! directory name); the hex suffix keeps ids globally unique so two machines
+//! that independently create a same-named folder never silently merge, and is an
+//! implementation detail the user never sees or types. All folders are equal —
+//! there is no privileged "vault". Names must be unique on this machine, so a
+//! second folder by the same name is refused. Re-running init on an
+//! already-registered path updates that folder in place (preserving its id and
+//! peers), so init is always safe to repeat.
 
 use std::fs::{self, File};
 use std::io::Read;
@@ -15,7 +17,7 @@ use std::path::Path;
 use anyhow::{bail, Result};
 use serde_json::{json, Value};
 
-use crate::agent::{ensure_started, vault_folder_config, Context};
+use crate::agent::{ensure_started, folder_config, folder_name, Context};
 use crate::fsutil::{expand_path, safe_dir_name};
 use crate::output::{emit, sanitize, say};
 
@@ -37,14 +39,6 @@ fn write_if_absent(path: &Path, content: &str) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, content)?;
-    Ok(())
-}
-
-fn scaffold(root: &Path) -> Result<()> {
-    write_if_absent(
-        &root.join("README.md"),
-        "# My ByteFerret Vault\n\nEdit any doc in neovim; it syncs to your other machines automatically.\nCross-reference docs anywhere with `[[wiki-links]]`.\n",
-    )?;
     Ok(())
 }
 
@@ -104,80 +98,64 @@ pub fn init(target: &str, existing: bool, label: Option<&str>) -> Result<()> {
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "folder".to_string());
 
+    let existing_folders = ctx.client.get_folders()?;
+
     // Re-init detection is by *path*, so running init twice on the same
     // directory updates the existing registration instead of duplicating it.
-    let registered = ctx.client.get_folders()?.into_iter().find(|f| {
+    let registered = existing_folders.iter().find(|f| {
         f.get("path")
             .and_then(Value::as_str)
             .map(|p| fs::canonicalize(p).map(|c| c == abs).unwrap_or(p == path_str))
             .unwrap_or(false)
     });
 
-    // First init (or re-init of the vault) is the primary vault; anything else
-    // is an additional folder with its own generated id.
-    let (folder_id, folder_label, peers, is_primary) = if let Some(f) = &registered {
-        let id = f.get("id").and_then(Value::as_str).unwrap_or(&ctx.config.folder_id).to_string();
-        let old_label = f.get("label").and_then(Value::as_str).unwrap_or("").to_string();
-        let keep = if old_label.is_empty() { dir_name.clone() } else { old_label };
-        let is_primary = id == ctx.config.folder_id;
-        (id, label.map(str::to_string).unwrap_or(keep), folder_peers(f), is_primary)
-    } else if ctx.config.vault_path.as_deref().map(|v| v == path_str).unwrap_or(true) {
-        // Preserve any peers already granted to the vault id (e.g. the vault
-        // directory moved and is being re-initialized at its new home).
-        let peers = ctx.client.get_folder(&ctx.config.folder_id)?.as_ref().map(folder_peers).unwrap_or_default();
-        (ctx.config.folder_id.clone(), label.unwrap_or("ByteFerret Vault").to_string(), peers, true)
+    // The visible, user-facing name: from --label, else the directory name.
+    let name = folder_id_slug(label.unwrap_or(&dir_name));
+
+    // Folder names are unique on this machine, so the invisible suffix never
+    // produces two folders a user can't tell apart. A re-init of the same path
+    // is exempt (it *is* that folder); any other folder already using the name
+    // is a genuine collision.
+    let this_id = registered.and_then(|f| f.get("id").and_then(Value::as_str));
+    if let Some(clash) = existing_folders.iter().find(|f| {
+        let id = f.get("id").and_then(Value::as_str).unwrap_or("");
+        Some(id) != this_id && folder_name(id).eq_ignore_ascii_case(&name)
+    }) {
+        let at = clash.get("path").and_then(Value::as_str).unwrap_or("");
+        bail!(
+            "a folder named '{name}' already exists here (at {at}). Folder names must be \
+             unique — pass --label <other-name>."
+        );
+    }
+
+    let (folder_id, peers) = if let Some(f) = registered {
+        let id = f.get("id").and_then(Value::as_str).unwrap_or_default().to_string();
+        (id, folder_peers(f))
     } else {
-        let name = label.unwrap_or(&dir_name);
-        (generate_folder_id(&ctx, name)?, name.to_string(), vec![], false)
+        (generate_folder_id(&ctx, &name)?, vec![])
     };
 
-    // Starter content only for a brand-new primary vault; an existing directory
-    // (or an additional folder) is taken as-is — init must never plant files in
-    // a directory the user already owns the contents of.
-    if is_primary && !existing && registered.is_none() {
-        scaffold(&abs)?;
-    }
+    // Never plant files in a directory the user owns — only the managed ignore
+    // list, and only if absent.
     write_if_absent(&abs.join(".stignore"), STIGNORE)?;
 
-    let folder = vault_folder_config(&folder_id, &folder_label, &path_str, &peers);
+    let folder = folder_config(&folder_id, &name, &path_str, &peers);
     ctx.client.put_folder(&folder)?;
 
-    let mut config = ctx.config.clone();
-    if is_primary {
-        config.vault_path = Some(path_str.clone());
-        config.save(&ctx.paths)?;
-    }
-
-    if is_primary {
-        say(&format!("Vault ready at {path_str}"));
-        say(&format!("  folder id: {folder_id}"));
-        say(if registered.is_some() || existing {
-            "  attached existing folder (no files changed)"
-        } else {
-            "  scaffolded starter structure"
-        });
-        say("");
-        say("Next: get this machine's device id with `byteferret status`, then run");
-        say("`byteferret pair --with <id>` on the other machine.");
+    say(&format!("Folder '{}' ready at {path_str}", sanitize(&name)));
+    say(if registered.is_some() {
+        "  updated existing registration (peers unchanged)"
     } else {
-        say(&format!("Folder ready at {path_str}"));
-        say(&format!("  folder id: {}  (\"{}\")", sanitize(&folder_id), sanitize(&folder_label)));
-        say(if registered.is_some() {
-            "  updated existing registration (id and peers unchanged)"
-        } else {
-            "  registered (no files changed)"
-        });
-        say("");
-        say("Share it with a paired machine:");
-        say(&format!("  byteferret pair --with <device-id> --folder {}", sanitize(&folder_id)));
-    }
+        "  registered (no files changed)"
+    });
+    say("");
+    say("Share it with a paired machine:");
+    say(&format!("  byteferret pair --with <device-or-alias> --folder {}", sanitize(&name)));
     emit(&json!({
         "ok": true,
         "path": path_str,
+        "name": name,
         "folderId": folder_id,
-        "label": folder_label,
-        "primary": is_primary,
-        "vaultPath": config.vault_path,
         "updated": registered.is_some(),
     }));
     Ok(())

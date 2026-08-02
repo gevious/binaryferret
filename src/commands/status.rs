@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use crate::agent::{load_context, peer_status, PeerSync, ShareState};
+use crate::agent::{folder_name, load_context, peer_status, PeerSync, ShareState};
 use crate::fsutil::find_files;
 use crate::output::{emit, sanitize, say};
 use crate::syncthing::process;
@@ -23,6 +23,16 @@ fn short(id: &str) -> String {
     id.chars().take(7).collect()
 }
 
+/// How a peer's device id appears in the peer list: the full id under `-v`,
+/// otherwise just its first segment with an ellipsis.
+fn id_display(id: &str, verbose: bool) -> String {
+    if verbose {
+        id.to_string()
+    } else {
+        format!("{}…", short(id))
+    }
+}
+
 /// One registered Syncthing folder, as `status` reports it.
 struct FolderInfo {
     id: String,
@@ -31,6 +41,14 @@ struct FolderInfo {
     /// Device ids the folder is shared with (this device excluded).
     peers: Vec<String>,
     state: String,
+    need_bytes: i64,
+}
+
+impl FolderInfo {
+    /// The user-facing name — the id with its invisible uniqueness suffix removed.
+    fn name(&self) -> &str {
+        crate::agent::folder_name(&self.id)
+    }
 }
 
 /// How one (folder, peer) pair renders next to the folder id, e.g.
@@ -75,11 +93,12 @@ fn peer_folder_states(
 }
 
 /// Reports agent + Syncthing health, this machine's identity (hostname, device
-/// id), the vault, connected peers and their folders, sync state, pending pair
-/// requests, offered folders, and any conflict files (FR-16, FR-29). This is
-/// also where a machine's device id comes from during pairing. Read-only:
-/// never starts Syncthing — if it's down, that's the headline.
-pub fn status() -> Result<()> {
+/// id), every registered folder and its sync state, connected peers and the
+/// folders shared with them, pending pair requests, offered folders, and any
+/// conflict files (FR-16, FR-29). This is also where a machine's device id comes
+/// from during pairing. Read-only: never starts Syncthing — if it's down, that's
+/// the headline.
+pub fn status(verbose: bool) -> Result<()> {
     let ctx = load_context()?;
     let host = hostname();
     let key = if ctx.api_key.is_empty() { None } else { Some(ctx.api_key.as_str()) };
@@ -90,12 +109,8 @@ pub fn status() -> Result<()> {
         if !host.is_empty() {
             say(&format!("hostname:   {host}"));
         }
-        if let Some(v) = &ctx.config.vault_path {
-            say(&format!("vault:      {v}"));
-        }
         emit(&json!({
             "ok": true, "agentRunning": false, "hostname": host,
-            "vaultPath": ctx.config.vault_path,
         }));
         return Ok(());
     }
@@ -106,10 +121,8 @@ pub fn status() -> Result<()> {
     let conns = ctx.client.connections().unwrap_or_default();
     let pending = ctx.client.pending_devices()?;
     let pending_folders = ctx.client.pending_folders()?;
-    let folder = &ctx.config.folder_id;
 
-    // Every registered folder — the vault plus any additional `init`ed or
-    // accepted folders — so multi-folder setups are fully visible here.
+    // Every registered folder — all equal, none privileged.
     let folders: Vec<FolderInfo> = ctx
         .client
         .get_folders()
@@ -117,7 +130,11 @@ pub fn status() -> Result<()> {
         .iter()
         .map(|f| {
             let id = f.get("id").and_then(Value::as_str).unwrap_or("").to_string();
-            let state = ctx.client.folder_status(&id).map(|s| s.state).unwrap_or_default();
+            let (state, need_bytes) = ctx
+                .client
+                .folder_status(&id)
+                .map(|s| (s.state, s.need_bytes))
+                .unwrap_or_default();
             FolderInfo {
                 label: f.get("label").and_then(Value::as_str).unwrap_or("").to_string(),
                 path: f.get("path").and_then(Value::as_str).unwrap_or("").to_string(),
@@ -134,23 +151,18 @@ pub fn status() -> Result<()> {
                     .unwrap_or_default(),
                 id,
                 state,
+                need_bytes,
             }
         })
         .collect();
 
-    let mut folder_state = String::new();
-    let mut need_bytes: i64 = 0;
-    if ctx.config.vault_path.is_some() {
-        if let Ok(st) = ctx.client.folder_status(folder) {
-            folder_state = st.state;
-            need_bytes = st.need_bytes;
-        }
-    }
-
-    let conflicts: Vec<String> = match &ctx.config.vault_path {
-        Some(v) => find_files(Path::new(v), ".sync-conflict-", 100).iter().map(|p| p.to_string_lossy().to_string()).collect(),
-        None => vec![],
-    };
+    // Conflict files can appear in any folder, so scan every folder's path.
+    let conflicts: Vec<String> = folders
+        .iter()
+        .filter(|f| !f.path.is_empty())
+        .flat_map(|f| find_files(Path::new(&f.path), ".sync-conflict-", 100))
+        .map(|p| p.to_string_lossy().to_string())
+        .collect();
 
     // Per-peer folder share states, computed once and used by both the human
     // and the JSON rendering below.
@@ -164,26 +176,17 @@ pub fn status() -> Result<()> {
         say(&format!("hostname:   {host}"));
     }
     say(&format!("device id:  {device_id}"));
-    match &ctx.config.vault_path {
-        Some(v) => say(&format!("vault:      {v}")),
-        None => say("vault:      (none — run `byteferret init`)"),
-    }
-    if ctx.config.vault_path.is_some() {
-        let extra = if need_bytes > 0 { format!("  ({need_bytes} bytes to sync)") } else { String::new() };
-        say(&format!("sync state: {}{extra}", if folder_state.is_empty() { "unknown" } else { &folder_state }));
-    }
     say("mode:       p2p");
-    // The vault has its own lines above; list all folders once there is more
-    // to the picture than the vault alone.
-    if folders.iter().any(|f| f.id != *folder) {
+    if folders.is_empty() {
+        say("folders:    none — run `byteferret init <path>`");
+    } else {
         say("folders:");
         for f in &folders {
-            let label = sanitize(&f.label);
-            let named = if label.is_empty() { String::new() } else { format!(" (\"{label}\")") };
             let state = if f.state.is_empty() { "unknown".to_string() } else { f.state.clone() };
+            let extra = if f.need_bytes > 0 { format!(" ({} bytes to sync)", f.need_bytes) } else { String::new() };
             say(&format!(
-                "  - {}{named}  {}  — {state}, shared with {} peer(s)",
-                sanitize(&f.id),
+                "  - {}  {}  — {state}{extra}, shared with {} peer(s)",
+                sanitize(f.name()),
                 sanitize(&f.path),
                 f.peers.len(),
             ));
@@ -200,10 +203,12 @@ pub fn status() -> Result<()> {
                 .filter(|a| !a.is_empty())
                 .map(|a| format!("  {}", sanitize(&a)))
                 .unwrap_or_default();
+            // Prefer a local alias (trusted) over the peer's self-chosen name.
+            let label = ctx.config.alias_for(&p.id).map(str::to_string).unwrap_or_else(|| p.label());
             say(&format!(
-                "  - {} ({}…): {}{addr}",
-                sanitize(&p.label()),
-                short(&p.id),
+                "  - {} ({}): {}{addr}",
+                sanitize(&label),
+                id_display(&p.id, verbose),
                 if p.connected { "connected" } else { "disconnected" },
             ));
             if shared.is_empty() {
@@ -212,7 +217,7 @@ pub fn status() -> Result<()> {
                 for (fid, state, completion) in shared {
                     say(&format!(
                         "      {}{}",
-                        sanitize(fid),
+                        sanitize(folder_name(fid)),
                         share_annotation(*state, *completion)
                     ));
                 }
@@ -248,11 +253,12 @@ pub fn status() -> Result<()> {
             for (did, offer) in &pf.offered_by {
                 let label = sanitize(&offer.label);
                 let named = if label.is_empty() { String::new() } else { format!(" \"{label}\"") };
-                say(&format!("  - {}{named} — offered by {}", sanitize(fid), short(did)));
+                let by = ctx.config.alias_for(did).map(str::to_string).unwrap_or_else(|| short(did));
+                say(&format!("  - {}{named} — offered by {}", sanitize(folder_name(fid)), sanitize(&by)));
                 say(&format!(
                     "      accept:  byteferret pair {} --accept --folder {}",
                     short(did),
-                    sanitize(fid)
+                    sanitize(folder_name(fid))
                 ));
             }
         }
@@ -274,28 +280,27 @@ pub fn status() -> Result<()> {
         "deviceId": device_id,
         "syncthingVersion": version,
         "guiAddress": ctx.config.gui_address,
-        "vaultPath": ctx.config.vault_path,
-        "folderId": folder,
-        "syncState": if folder_state.is_empty() { Value::Null } else { Value::String(folder_state) },
-        "needBytes": need_bytes,
         "mode": "p2p",
         "folders": folders.iter().map(|f| json!({
+            "name": f.name(),
             "id": f.id,
             "label": f.label,
             "path": f.path,
             "state": f.state,
+            "needBytes": f.need_bytes,
             "peers": f.peers,
         })).collect::<Vec<_>>(),
+        "aliases": ctx.config.aliases,
         "peers": peers.iter().zip(&shares).map(|(p, shared)| json!({
             "deviceId": p.id,
             "name": p.name,
+            "alias": ctx.config.alias_for(&p.id),
             "connected": p.connected,
             "address": conns.get(&p.id).map(|c| c.address.clone()).unwrap_or_default(),
-            "remoteState": p.remote_state,
-            "sharingVault": p.sharing(),
+            "sharing": p.sharing(),
             "shareState": p.share_state().tag(),
             "foldersSynced": shared.iter().map(|(fid, state, completion)| json!({
-                "folder": fid, "state": state.tag(), "completion": completion,
+                "folder": folder_name(fid), "state": state.tag(), "completion": completion,
             })).collect::<Vec<_>>(),
         })).collect::<Vec<_>>(),
         "pending": pending.iter().map(|(pid, info)| json!({
@@ -305,6 +310,7 @@ pub fn status() -> Result<()> {
         })).collect::<Vec<_>>(),
         "pendingFolders": pending_folders.iter().flat_map(|(fid, pf)| {
             pf.offered_by.iter().map(move |(did, offer)| json!({
+                "name": folder_name(fid),
                 "folderId": fid,
                 "offeredBy": did,
                 "label": offer.label,

@@ -1,3 +1,4 @@
+pub mod alias;
 pub mod doctor;
 pub mod init;
 pub mod logs;
@@ -7,4 +8,5 @@ pub mod service;
 pub mod start;
 pub mod status;
 pub mod stop;
+pub mod unpair;
 pub mod version;

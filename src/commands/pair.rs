@@ -4,21 +4,21 @@
 //!
 //!  1. **the connection** — `pair <device-id> --accept` admits a machine. On its
 //!     own that grants access to nothing.
-//!  2. **each folder** — `pair <device-id> --accept --folder <id>` shares one
+//!  2. **each folder** — `pair <device-id> --accept --folder <name>` shares one
 //!     folder with that machine, or takes up one it offered. Repeat the flag to
-//!     act on several folders from the same peer; `--reject --folder <id>`
+//!     act on several folders from the same peer; `--reject --folder <name>`
 //!     declines or withdraws exactly one.
 //!
-//! Both verbs always name one peer explicitly, by device id. There is no
-//! "accept everything waiting" — on a shared network anyone can put a request in
-//! your pending list, and a bulk accept would hand them the vault alongside the
-//! machine you actually meant to approve.
+//! Both verbs always name one peer explicitly, by device id (or a local alias).
+//! There is no "accept everything waiting" — on a shared network anyone can put a
+//! request in your pending list, and a bulk accept would hand them a folder
+//! alongside the machine you actually meant to approve.
 //!
 //! Typical flow:
-//!   desktop 1:  byteferret status                              → prints its device ID
-//!   desktop 2:  byteferret pair --with <id-1>                  → adds + shares the vault
-//!   desktop 1:  byteferret pair <id-2> --accept                → approves the connection
-//!   desktop 1:  byteferret pair <id-2> --accept --folder <f>   → shares/takes up a folder
+//!   desktop 1:  byteferret status                                 → prints its device ID
+//!   desktop 2:  byteferret pair --with <id-1> --folder <name>     → adds + shares a folder
+//!   desktop 1:  byteferret pair <id-2> --accept                   → approves the connection
+//!   desktop 1:  byteferret pair <id-2> --accept --folder <name>   → shares/takes up a folder
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,7 +27,8 @@ use anyhow::{bail, Result};
 use serde_json::json;
 
 use crate::agent::{
-    add_device, create_shared_folder, resolve_device_target, share_folder, unshare_folder, Context,
+    add_device, create_shared_folder, folder_name, folder_registered_at, resolve_folder,
+    resolve_peer, share_folder, unshare_folder, Context,
 };
 use crate::fsutil::{expand_path, safe_dir_name};
 use crate::output::{emit, sanitize, say};
@@ -51,6 +52,23 @@ pub struct PairArgs<'a> {
 }
 
 pub fn pair(a: PairArgs) -> Result<()> {
+    // The bare positional argument identifies the peer for `--accept`/`--reject`
+    // and has no meaning alongside `--with`. Catch the easy mistake of typing a
+    // folder there (`pair --with <peer> <folder>`) before Syncthing acts on it:
+    // left unchecked, clap parses the folder as the positional and it is silently
+    // ignored, so the wrong set of folders gets shared.
+    if let (Some(peer), Some(stray)) = (a.with, a.target) {
+        bail!(
+            "`pair --with <peer>` takes only the peer to pair with — '{}' was not \
+             understood.\nTo share a specific folder with the peer, name it with --folder:\n  \
+             byteferret pair --with {} --folder {}\n\
+             (folder names come from `byteferret init` / `byteferret status`)",
+            sanitize(stray),
+            sanitize(peer),
+            sanitize(stray),
+        );
+    }
+
     let ctx = crate::agent::ensure_started()?;
 
     if let Some(peer) = a.with {
@@ -73,26 +91,41 @@ pub fn pair(a: PairArgs) -> Result<()> {
 
 fn pair_with(ctx: &Context, a: &PairArgs, peer: &str) -> Result<()> {
     let client = &ctx.client;
-    // Initiating the pairing is itself the decision to share, so `--with` shares
-    // the configured vault unless the caller names other folders.
+    // `--with` normally takes the raw device id printed by the other machine, but
+    // a previously-set alias for it is accepted too (aliases are trusted, being
+    // locally set). An unknown id is passed through untouched so a brand-new peer
+    // can still be added the first time.
+    let peer_owned = ctx.config.device_for_alias(peer).map(str::to_string);
+    let peer = peer_owned.as_deref().unwrap_or(peer);
+    // Initiating the pairing is itself the decision to share. There is no
+    // privileged default folder, so name the folder(s) with --folder; when the
+    // machine has exactly one folder we take that as the obvious intent.
     let folders: Vec<String> = if a.folders.is_empty() {
-        vec![ctx.config.folder_id.clone()]
+        let ids = local_folder_ids(client)?;
+        match ids.as_slice() {
+            [] => bail!(
+                "no folders here yet — run `byteferret init <path>` first, then \
+                 `byteferret pair --with {} --folder <name>`.",
+                short(peer)
+            ),
+            [one] => vec![one.clone()],
+            _ => bail!(
+                "this machine has several folders — name which to share with --folder <name>:{}",
+                folder_name_list(&ids)
+            ),
+        }
     } else {
-        a.folders.clone()
+        a.folders.iter().map(|f| resolve_folder(client, f)).collect::<Result<Vec<_>>>()?
     };
 
     add_device(client, peer, a.name, a.address)?;
     for fid in &folders {
-        if client.get_folder(fid)?.is_none() {
-            say(&format!("(no folder '{}' on this machine — skipped; run `byteferret init` first)", sanitize(fid)));
-            continue;
-        }
         share_folder(client, fid, peer)?;
     }
     say(&format!(
         "Added {}… and shared {} with it.",
         short(peer),
-        join_folders(&folders)
+        join_folders(&folder_names(&folders))
     ));
 
     let connected = client
@@ -112,7 +145,7 @@ fn pair_with(ctx: &Context, a: &PairArgs, peer: &str) -> Result<()> {
     }
     emit(&json!({
         "ok": true, "action": "with", "peerId": peer,
-        "folders": folders, "alreadyConnected": connected,
+        "folders": folder_names(&folders), "folderIds": folders, "alreadyConnected": connected,
     }));
     Ok(())
 }
@@ -162,7 +195,7 @@ fn accept_or_reject(ctx: &Context, a: &PairArgs) -> Result<()> {
     }
 
     let cand_list: Vec<(String, String)> = candidates.into_iter().collect();
-    let device_id = resolve_device_target(target, &cand_list)?;
+    let device_id = resolve_peer(&ctx.config, target, &cand_list)?;
     let is_pending_device = pending_devices.contains_key(&device_id);
 
     // Which folders this peer is offering us right now.
@@ -198,7 +231,12 @@ fn accept_or_reject(ctx: &Context, a: &PairArgs) -> Result<()> {
         }
         w
     } else {
-        a.folders.clone()
+        // The user names folders by their visible name; resolve each to a real
+        // id, looking at both our own folders and the ones this peer offers.
+        a.folders
+            .iter()
+            .map(|f| resolve_folder_ref(ctx, f, &offered))
+            .collect()
     };
 
     if accepting && a.path.is_some() && wanted.len() > 1 {
@@ -213,13 +251,28 @@ fn accept_or_reject(ctx: &Context, a: &PairArgs) -> Result<()> {
             reject_folder(ctx, &device_id, fid, &offered)?
         };
         say(&format!("  {outcome}"));
-        affected.push(fid.clone());
+        affected.push(folder_name(fid).to_string());
     }
 
     emit(&json!({
         "ok": true, "action": action, "peerId": device_id, "folders": affected,
     }));
     Ok(())
+}
+
+/// Map a user-typed folder reference to a real Syncthing id when acting on a
+/// peer: a folder of ours (by name/id) or one the peer is offering (by name/id).
+/// Falls through to the raw input so the downstream "not offered / not here"
+/// message is what the user sees for a genuine typo.
+fn resolve_folder_ref(ctx: &Context, input: &str, offered: &BTreeMap<String, String>) -> String {
+    if let Ok(id) = resolve_folder(&ctx.client, input) {
+        return id;
+    }
+    offered
+        .keys()
+        .find(|oid| folder_name(oid).eq_ignore_ascii_case(input) || oid.as_str() == input)
+        .cloned()
+        .unwrap_or_else(|| input.to_string())
 }
 
 /// `--accept` / `--reject` with no folder named: the *connection* decision.
@@ -260,33 +313,38 @@ fn device_only(
     let shared = shared_with(client, device_id)?;
     say("");
     if !shared.is_empty() {
-        say(&format!("Already shared with it: {}.", join_folders(&shared)));
+        say(&format!("Already shared with it: {}.", join_folders(&folder_names(&shared))));
     }
     if !offered.is_empty() {
         say("It is offering these folders — accept the ones you want:");
         for (fid, label) in offered {
             let label = sanitize(label);
             let named = if label.is_empty() { String::new() } else { format!(" \"{label}\"") };
-            say(&format!("  {}{named}", sanitize(fid)));
+            say(&format!("  {}{named}", sanitize(folder_name(fid))));
             say(&format!(
                 "    byteferret pair {} --accept --folder {}",
                 short(device_id),
-                sanitize(fid)
+                sanitize(folder_name(fid))
             ));
         }
     }
     if shared.is_empty() && offered.is_empty() {
+        // No default folder exists any more; point at a real one if there is any.
         say("No folders are shared with it yet, and it isn't offering any. To share one of yours:");
+        let example = local_folder_ids(client)
+            .ok()
+            .and_then(|ids| ids.first().map(|id| folder_name(id).to_string()))
+            .unwrap_or_else(|| "<name>".to_string());
         say(&format!(
             "  byteferret pair {} --accept --folder {}",
             short(device_id),
-            ctx.config.folder_id
+            example
         ));
     }
     emit(&json!({
         "ok": true, "action": "accept", "peerId": device_id, "folders": [],
-        "offeredFolders": offered.keys().collect::<Vec<_>>(),
-        "sharedFolders": shared,
+        "offeredFolders": offered.keys().map(|id| folder_name(id)).collect::<Vec<_>>(),
+        "sharedFolders": folder_names(&shared),
     }));
     Ok(())
 }
@@ -309,29 +367,43 @@ fn accept_folder(
     if client.get_folder(folder_id)?.is_some() {
         let changed = share_folder(client, folder_id, device_id)?;
         return Ok(if changed {
-            format!("shared '{}' with {}", sanitize(folder_id), short(device_id))
+            format!("shared '{}' with {}", sanitize(folder_name(folder_id)), short(device_id))
         } else {
-            format!("'{}' was already shared with {}", sanitize(folder_id), short(device_id))
+            format!("'{}' was already shared with {}", sanitize(folder_name(folder_id)), short(device_id))
         });
     }
 
     let Some(label) = offered.get(folder_id) else {
         bail!(
-            "{} is not offering a folder '{}', and you don't have one by that id.\n\
+            "{} is not offering a folder '{}', and you don't have one by that name.\n\
              Run `byteferret status` to see what it offers.",
             short(device_id),
-            sanitize(folder_id)
+            sanitize(folder_name(folder_id))
         );
     };
 
     let dir = match a.path {
-        Some(p) => expand_path(p),
+        Some(p) => {
+            let dir = expand_path(p);
+            // An explicit path is honoured, but never onto another folder's
+            // directory — that is the one thing we must not do silently.
+            if let Some(other) = folder_registered_at(client, &dir)? {
+                bail!(
+                    "{} is already the folder '{}' on this machine — accepting '{}' there would \
+                     merge the two and overwrite files. Pick a different --path.",
+                    dir.display(),
+                    sanitize(&other),
+                    sanitize(folder_id)
+                );
+            }
+            dir
+        }
         None => default_folder_path(ctx, folder_id, label)?,
     };
     create_shared_folder(client, folder_id, label, &dir.to_string_lossy(), device_id)?;
     Ok(format!(
         "accepted '{}' from {} → {}",
-        sanitize(folder_id),
+        sanitize(folder_name(folder_id)),
         short(device_id),
         dir.display()
     ))
@@ -349,39 +421,40 @@ fn reject_folder(
         client.dismiss_pending_folder(folder_id, device_id)?;
         return Ok(format!(
             "declined '{}' from {}",
-            sanitize(folder_id),
+            sanitize(folder_name(folder_id)),
             short(device_id)
         ));
     }
     if unshare_folder(client, folder_id, device_id)? {
         return Ok(format!(
             "stopped sharing '{}' with {} (the folder and its files stay here)",
-            sanitize(folder_id),
+            sanitize(folder_name(folder_id)),
             short(device_id)
         ));
     }
     Ok(format!(
         "nothing to do for '{}' — {} neither offers it nor has access to it",
-        sanitize(folder_id),
+        sanitize(folder_name(folder_id)),
         short(device_id)
     ))
 }
 
 /// Where a folder taken up from a peer should live when `--path` is not given:
-/// beside the existing vault, under a name derived from the peer's label.
+/// a *new* directory in the current working directory, named after the peer's
+/// label — the same "init a folder wherever you are" model as `byteferret init`.
 ///
-/// Refuses rather than guesses in the two cases where guessing could do damage —
-/// no vault to anchor to, or a directory already sitting at that name (which a
-/// send-receive folder would start merging into).
+/// The chosen directory is always fresh: never a directory another folder already
+/// owns (which a send-receive folder would start merging into and overwrite), and
+/// never one that already has contents. When the obvious name is taken, we fall
+/// back to the folder's globally-unique id so a distinct new folder is still
+/// created automatically rather than clobbering an existing one.
 fn default_folder_path(ctx: &Context, folder_id: &str, label: &str) -> Result<PathBuf> {
-    let Some(vault) = &ctx.config.vault_path else {
-        bail!(
-            "no vault is configured, so there is nowhere obvious to put '{}' — \
-             pass --path <dir> to choose.",
+    let base = std::env::current_dir().map_err(|e| {
+        anyhow::anyhow!(
+            "cannot determine the current directory ({e}) — pass --path <dir> to choose where '{}' goes",
             sanitize(folder_id)
-        );
-    };
-    let base = Path::new(vault).parent().unwrap_or(Path::new(vault)).to_path_buf();
+        )
+    })?;
 
     // The label and the id both come from the peer, so neither is used as a path
     // until it has been reduced to a single safe component.
@@ -391,18 +464,38 @@ fn default_folder_path(ctx: &Context, folder_id: &str, label: &str) -> Result<Pa
              pass --path <dir> to choose where it goes."
         );
     };
-    let dir = base.join(&name);
 
-    let occupied = dir.read_dir().map(|mut e| e.next().is_some()).unwrap_or(false);
-    if occupied {
-        bail!(
-            "{} already exists and is not empty — pass --path <dir> to choose where '{}' goes, \
-             or point it there deliberately.",
-            dir.display(),
-            sanitize(folder_id)
-        );
+    let preferred = base.join(&name);
+    if is_free_for_new_folder(&ctx.client, &preferred)? {
+        return Ok(preferred);
     }
-    Ok(dir)
+
+    // The obvious name is already an existing folder or a non-empty directory.
+    // Disambiguate with the peer's unique folder id so we still create a new,
+    // separate folder instead of overwriting whatever is there.
+    if let Some(id_name) = safe_dir_name(folder_id) {
+        let alt = base.join(&id_name);
+        if id_name != name && is_free_for_new_folder(&ctx.client, &alt)? {
+            return Ok(alt);
+        }
+    }
+
+    bail!(
+        "{} already exists (another folder or non-empty directory) — pass --path <dir> to \
+         choose where '{}' goes.",
+        preferred.display(),
+        sanitize(folder_id)
+    );
+}
+
+/// A directory we may safely create a brand-new folder in: not already registered
+/// to another folder here, and empty if it exists on disk at all.
+fn is_free_for_new_folder(client: &Client, dir: &Path) -> Result<bool> {
+    if folder_registered_at(client, dir)?.is_some() {
+        return Ok(false);
+    }
+    let non_empty = dir.read_dir().map(|mut e| e.next().is_some()).unwrap_or(false);
+    Ok(!non_empty)
 }
 
 /// Folder ids currently shared with `device_id`.
@@ -426,6 +519,25 @@ fn join_folders(folders: &[String]) -> String {
         [one] => format!("'{}'", sanitize(one)),
         many => many.iter().map(|f| format!("'{}'", sanitize(f))).collect::<Vec<_>>().join(", "),
     }
+}
+
+/// Every folder id registered on this machine.
+fn local_folder_ids(client: &Client) -> Result<Vec<String>> {
+    Ok(client
+        .get_folders()?
+        .iter()
+        .filter_map(|f| f.get("id").and_then(|v| v.as_str()).map(str::to_string))
+        .collect())
+}
+
+/// The visible names of a set of folder ids (suffix stripped).
+fn folder_names(ids: &[String]) -> Vec<String> {
+    ids.iter().map(|id| folder_name(id).to_string()).collect()
+}
+
+/// A bulleted list of folder names for an error hint.
+fn folder_name_list(ids: &[String]) -> String {
+    ids.iter().map(|id| format!("\n  {}", folder_name(id))).collect()
 }
 
 fn short(id: &str) -> String {

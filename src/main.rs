@@ -35,7 +35,7 @@ enum Cmd {
     Start,
     /// Stop the agent
     Stop,
-    /// Bring a folder into sync (the first becomes the vault; ids are automatic)
+    /// Bring a folder into sync (names must be unique; ids are automatic)
     Init {
         path: String,
         /// Attach an existing folder instead of scaffolding (won't overwrite files)
@@ -62,7 +62,7 @@ enum Cmd {
         /// Act on every folder the peer currently offers
         #[arg(long)]
         all_folders: bool,
-        /// Where to put a folder taken up from a peer (defaults to beside the vault)
+        /// Where to put a folder taken up from a peer (defaults to a new folder in the current directory)
         #[arg(long, value_name = "DIR")]
         path: Option<String>,
         /// Explicit peer sync address, e.g. tcp://host:22000 (manual/overlay pairing)
@@ -75,8 +75,35 @@ enum Cmd {
         #[arg(value_name = "DEVICE-ID")]
         id: Option<String>,
     },
+    /// Give a device a local alias (usable anywhere a device id is)
+    Alias {
+        /// Device id, an unambiguous prefix, or an existing alias (omit to list all)
+        #[arg(value_name = "DEVICE-ID")]
+        device: Option<String>,
+        /// The alias to assign (omit to show the current one; omit with --remove)
+        alias: Option<String>,
+        /// Remove the alias for the named device
+        #[arg(long)]
+        remove: bool,
+    },
+    /// Stop sharing a folder — from one machine with --with, or everywhere (files kept)
+    Unpair {
+        /// Folder name (or an unambiguous prefix) to unpair
+        #[arg(value_name = "FOLDER")]
+        folder: String,
+        /// Unpair from just this machine (device id, prefix, or alias); the folder stays shared with others
+        #[arg(long, value_name = "DEVICE")]
+        with: Option<String>,
+        /// Skip the confirmation prompt when removing the folder from every machine
+        #[arg(short = 'y', long)]
+        yes: bool,
+    },
     /// Show agent health, this device's id, peers, folders, sync state
-    Status,
+    Status {
+        /// Show full device ids instead of the short first segment
+        #[arg(short = 'v', long)]
+        verbose: bool,
+    },
     /// Print agent and Syncthing versions
     Version,
     /// Diagnose agent health (optionally repair safe issues)
@@ -161,7 +188,13 @@ fn main() {
             all_folders: *all_folders,
             path: path.as_deref(),
         }),
-        Cmd::Status => commands::status::status(),
+        Cmd::Alias { device, alias, remove } => {
+            commands::alias::alias(device.as_deref(), alias.as_deref(), *remove)
+        }
+        Cmd::Unpair { folder, with, yes } => {
+            commands::unpair::unpair(folder, with.as_deref(), *yes)
+        }
+        Cmd::Status { verbose } => commands::status::status(*verbose),
         Cmd::Version => commands::version::version(),
         Cmd::Doctor { fix } => commands::doctor::doctor(*fix),
         Cmd::Logs {

@@ -12,9 +12,6 @@ pub const SYNCTHING_VERSION: &str = "1.30.0";
 /// Pinned Typst release used for local `publish --pdf` rendering (FR-19).
 pub const TYPST_VERSION: &str = "0.12.0";
 
-/// Folder ID shared by every machine's default vault so `pair` links them.
-pub const DEFAULT_FOLDER_ID: &str = "byteferret-vault";
-
 /// Default localhost bind for Syncthing's REST/GUI API.
 pub const DEFAULT_GUI_ADDRESS: &str = "127.0.0.1:8384";
 

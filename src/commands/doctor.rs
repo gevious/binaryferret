@@ -138,7 +138,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
     } else {
         checks.push(
             Check::new(Level::Warn, "config", "no config.toml yet")
-                .with_hint("run `byteferret init <path>` to create a vault"),
+                .with_hint("run `byteferret init <path>` to register a folder"),
         );
     }
 
@@ -209,45 +209,43 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
         }
     }
 
-    // --- vault folder ---
-    match &ctx.config.vault_path {
-        None => checks.push(
-            Check::new(Level::Warn, "vault", "no vault configured")
-                .with_hint("run `byteferret init <path>`"),
-        ),
-        Some(v) => {
-            if Path::new(v).is_dir() {
-                checks.push(Check::new(Level::Ok, "vault", v.clone()));
-            } else {
-                checks.push(
-                    Check::new(
-                        Level::Fail,
-                        "vault",
-                        format!("configured path missing: {v}"),
-                    )
-                    .with_hint("re-create it or run `byteferret init <path> --existing`"),
-                );
-            }
-            match ctx.client.get_folder(&ctx.config.folder_id) {
-                Ok(Some(_)) => checks.push(Check::new(
-                    Level::Ok,
-                    "folder",
-                    format!("registered ({})", ctx.config.folder_id),
-                )),
-                Ok(None) => checks.push(
-                    Check::new(
-                        Level::Fail,
-                        "folder",
-                        format!("'{}' not registered with Syncthing", ctx.config.folder_id),
-                    )
-                    .with_hint("run `byteferret init <path>` to (re)register it"),
-                ),
-                Err(_) => {}
-            }
+    // --- folders ---
+    let folders = ctx.client.get_folders().unwrap_or_default();
+    if folders.is_empty() {
+        checks.push(
+            Check::new(Level::Warn, "folders", "none registered")
+                .with_hint("run `byteferret init <path>` to sync a directory"),
+        );
+    } else {
+        let missing: Vec<String> = folders
+            .iter()
+            .filter(|f| {
+                f.get("path")
+                    .and_then(|p| p.as_str())
+                    .map(|p| !Path::new(p).is_dir())
+                    .unwrap_or(false)
+            })
+            .filter_map(|f| f.get("id").and_then(|v| v.as_str()).map(|id| crate::agent::folder_name(id).to_string()))
+            .collect();
+        if missing.is_empty() {
+            checks.push(Check::new(
+                Level::Ok,
+                "folders",
+                format!("{} registered", folders.len()),
+            ));
+        } else {
+            checks.push(
+                Check::new(
+                    Level::Fail,
+                    "folders",
+                    format!("{} folder(s) point at a missing directory: {}", missing.len(), missing.join(", ")),
+                )
+                .with_hint("re-create the directory or run `byteferret init <path> --existing`"),
+            );
         }
     }
 
-    // --- peers / connectivity + vault sharing ---
+    // --- peers / connectivity + folder sharing ---
     let peers = crate::agent::peer_status(&ctx).unwrap_or_default();
     if peers.is_empty() {
         checks.push(
@@ -264,7 +262,7 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
         ));
 
         // The check that catches the silent stall: a peer is connected, so
-        // `peers` looks fine, but it never shared the vault back — so nothing
+        // `peers` looks fine, but it never shared a folder back — so nothing
         // ever syncs. Uses the same `share_state()` classification as
         // `status` so the two commands can never disagree (previously
         // `doctor` ignored the "establishing"/"unknown" state and reported
@@ -285,23 +283,23 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
                 checks.push(
                     Check::new(
                         Level::Warn,
-                        "vault share",
+                        "folder share",
                         format!(
-                            "{} connected peer(s) not sharing the vault back: {}",
+                            "{} connected peer(s) not sharing a folder back: {}",
                             stalled.len(),
                             names(&stalled)
                         ),
                     )
                     .with_hint(
-                        "on that machine run `byteferret init <path>` (if it has no vault), \
-                         then `byteferret pair --with <this-device-id>` to share it back",
+                        "on that machine run `byteferret pair --with <this-device-id> --folder <name>` \
+                         to share the folder back",
                     ),
                 );
             } else if !establishing.is_empty() {
                 checks.push(
                     Check::new(
                         Level::Warn,
-                        "vault share",
+                        "folder share",
                         format!(
                             "{} peer(s) still establishing the share (connected, not yet in sync): {}",
                             establishing.len(),
@@ -310,32 +308,34 @@ fn build_checks(paths: &Paths) -> Vec<Check> {
                     )
                     .with_hint(
                         "give it a moment and re-check `byteferret status`; if it persists, run \
-                         `byteferret pair --with <this-device-id>` on that machine to share the vault back",
+                         `byteferret pair --with <this-device-id> --folder <name>` on that machine",
                     ),
                 );
             } else {
                 checks.push(Check::new(
                     Level::Ok,
-                    "vault share",
+                    "folder share",
                     format!("shared both ways with {connected} peer(s)"),
                 ));
             }
         }
     }
 
-    // --- conflicts ---
-    if let Some(v) = &ctx.config.vault_path {
-        let conflicts = find_files(Path::new(v), ".sync-conflict-", 100);
-        if !conflicts.is_empty() {
-            checks.push(
-                Check::new(
-                    Level::Warn,
-                    "conflicts",
-                    format!("{} sync-conflict file(s)", conflicts.len()),
-                )
-                .with_hint("open both copies, merge, then delete the *.sync-conflict-* file"),
-            );
-        }
+    // --- conflicts (across every folder) ---
+    let conflict_count: usize = folders
+        .iter()
+        .filter_map(|f| f.get("path").and_then(|p| p.as_str()))
+        .map(|p| find_files(Path::new(p), ".sync-conflict-", 100).len())
+        .sum();
+    if conflict_count > 0 {
+        checks.push(
+            Check::new(
+                Level::Warn,
+                "conflicts",
+                format!("{conflict_count} sync-conflict file(s)"),
+            )
+            .with_hint("open both copies, merge, then delete the *.sync-conflict-* file"),
+        );
     }
 
     checks
