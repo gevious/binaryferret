@@ -109,4 +109,5 @@ musl). See `docs/ACCEPTANCE.md` for the Path-A checklist.
 per the owner's decision (smaller, dependency-free distributable binary).
 **Deferred** (later phases): `byteferret config set`, short pairing code, gap-free
 versioning, neovim `:ByteFerretPublish`/`:ByteFerretShare`, `enroll` + all hub/Path-B
-features, offline-catchup tests, a public tagged release + `get.byteferret.com`.
+features, offline-catchup tests, a public tagged release + the hosted installer
+(live at `byteferret.com/install.sh`, served from the byteferret-website repo).

@@ -18,7 +18,7 @@ native Darwin build on macOS.
 ## Install
 
 ```sh
-curl -fsSL https://get.byteferret.com/install.sh | sh
+curl -fsSL https://byteferret.com/install.sh | sh
 ```
 
 This detects your OS/arch (Linux or macOS, x86_64 or arm64) and downloads the

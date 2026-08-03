@@ -3,7 +3,7 @@
 # (Linux or macOS) and (optionally) set up the user service (systemd/launchd).
 # Designed to be run straight from a URL:
 #
-#   curl -fsSL https://get.byteferret.com/install.sh | sh
+#   curl -fsSL https://byteferret.com/install.sh | sh
 #
 # Environment overrides:
 #   BYTEFERRET_REPO            GitHub owner/repo         (default: gevious/byteferret)
