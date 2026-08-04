@@ -1,0 +1,23 @@
+# Fail any push or PR that introduces a dependency whose license is not on the
+# allowlist in deny.toml. Byteferret is AGPL-3.0-only, so the graph must stay
+# AGPL-compatible (permissive licenses only).
+name: licenses
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  cargo-deny:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check dependency licenses
+        uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check licenses

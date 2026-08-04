@@ -1,0 +1,24 @@
+# cargo-deny configuration — enforced in CI (see .github/workflows/ci.yml).
+# Run locally with: cargo deny check licenses
+#
+# Byteferret is AGPL-3.0-only, so every dependency must carry an
+# AGPL-compatible license. Only the permissive licenses below are allowed;
+# anything else (new copyleft, CDDL, advertising clauses, unknown licenses)
+# fails the build until it is reviewed and explicitly added here.
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "0BSD",
+    "Zlib",
+    "Unlicense",
+    "Unicode-3.0",
+]
+confidence-threshold = 0.93
+
+# The workspace crate itself is the only AGPL code in the graph.
+[[licenses.exceptions]]
+name = "byteferret"
+allow = ["AGPL-3.0-only"]

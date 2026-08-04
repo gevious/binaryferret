@@ -179,4 +179,12 @@ state in `~/.local/share/byteferret/`. See `.agent/CONTEXT.md` for the architect
 
 ## License
 
-[AGPL-3.0-only](LICENSE). Syncthing is bundled as a separate MPL-2.0 dependency.
+[AGPL-3.0-only](LICENSE). Byteferret does not bundle or redistribute third-party
+binaries: [Syncthing](https://github.com/syncthing/syncthing) (MPL-2.0) and
+[Typst](https://github.com/typst/typst) (Apache-2.0) are downloaded at first run
+from their official GitHub releases, checksum-verified, and run as separate
+processes.
+
+Dependency licenses are enforced in CI: `cargo deny check licenses` (config in
+[`deny.toml`](deny.toml)) fails the build if any crate in the dependency graph
+carries a license outside the AGPL-compatible allowlist.
